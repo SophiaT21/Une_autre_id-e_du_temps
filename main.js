@@ -3,7 +3,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { createWater } from "./water.js";
+import { createWater, puddleLayout } from "./water.js";
 import { createFloor } from "./floor.js";
 import { createEnvMap } from "./sky.js";
 
@@ -67,10 +67,11 @@ const envMap = createEnvMap(renderer);
 
 // --- Eau --------------------------------------------------------------
 const MAX_RIPPLES = 24;
-// Deux flaques côte à côte (voir plus bas) : flaque.html = écran 0 (gauche),
-// flaque2.html = écran 1 (droite). Elles forment une seule grande flaque.
+// Deux flaques (voir plus bas) : flaque.html = écran 0 (à gauche),
+// flaque2.html = écran 1 (à droite). Écrans verticaux tournés en sens
+// opposés, qui se touchent par leur bord HAUT : ils forment une seule grande
+// flaque (voir setLayout dans water.js).
 const SCREEN_INDEX = Number(document.body.dataset.ecran || 0);
-const SCREEN_COUNT = 2;
 
 const water = createWater({
   width: WIDTH,
@@ -79,7 +80,7 @@ const water = createWater({
   envMap,
   refractionMap: floorRenderTarget.texture,
 });
-water.setLayout(SCREEN_INDEX, SCREEN_COUNT, camera.right);
+water.setLayout(SCREEN_INDEX, camera.right, camera.top);
 scene.add(water.mesh);
 water.setResolution(window.innerWidth * pixelRatio, window.innerHeight * pixelRatio);
 renderFloor();
@@ -104,11 +105,10 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 // --- Deux écrans d'eau reliés -----------------------------------------------
-// flaque.html (écran 0, à gauche) et flaque2.html (écran 1, à droite,
-// data-ecran="1") sont posés côte à côte et forment une seule grande flaque.
-// Chaque clic est envoyé à l'autre écran, qui crée la même onde au même
-// endroit de la grande flaque : elle démarre hors de son champ et arrive par
-// le bord commun.
+// flaque.html (écran 0) et flaque2.html (écran 1, data-ecran="1") forment une
+// seule grande flaque. Chaque clic est envoyé à l'autre écran, en
+// coordonnées de la grande flaque ; il crée la même onde au même endroit :
+// elle démarre hors de son champ et arrive par le bord commun (le bord haut).
 //
 // Les ondes passent par le serveur local (serveur.py) : ça marche entre
 // fenêtres, navigateurs et même ordinateurs différents. Si la page est servie
@@ -127,15 +127,28 @@ function sendRipple(message) {
   }
 }
 
-// Goutte tombée de l'écran ciel (voir ciel.js) : x = position en fraction
-// de la largeur totale des flaques, y = position en hauteur (0-1), delay =
-// secondes avant l'impact. Chaque flaque place l'onde dans son propre repère ;
-// si l'impact est sur la voisine, l'onde entre par le bord commun.
+// Passage repère de cet écran ↔ repère de la grande flaque.
+function toBig(local) {
+  const { flip, offset } = puddleLayout(SCREEN_INDEX, camera.top);
+  return new THREE.Vector2(flip * local.x + offset.x, flip * local.y + offset.y);
+}
+function toLocal(big) {
+  const { flip, offset } = puddleLayout(SCREEN_INDEX, camera.top);
+  return new THREE.Vector2(flip * (big.x - offset.x), flip * (big.y - offset.y));
+}
+
+// Goutte tombée de l'écran ciel (voir ciel.js) : x = position de gauche à
+// droite dans l'installation (0 = bord gauche de la flaque 1, 1 = bord droit
+// de la flaque 2), y = position en profondeur (0-1, au hasard), delay =
+// secondes avant l'impact.
+// Écrans tournés : la gauche→droite de l'installation suit la hauteur de la
+// grande flaque (bas de la flaque 1 → bas de la flaque 2), la profondeur
+// suit sa largeur.
 function receiveDrop({ x, y, delay }) {
-  const localX = x * SCREEN_COUNT - SCREEN_INDEX;
-  const worldX = camera.left + localX * (camera.right - camera.left);
-  const worldY = camera.bottom + y * (camera.top - camera.bottom);
-  water.addRipple(new THREE.Vector2(worldX, worldY), sharedTime() + delay);
+  const hw = camera.right;
+  const hh = camera.top;
+  const big = new THREE.Vector2(-hw + y * 2 * hw, -hh + x * 4 * hh);
+  water.addRipple(toLocal(big), sharedTime() + delay);
 }
 
 function receiveRipple(data) {
@@ -144,17 +157,9 @@ function receiveRipple(data) {
     receiveDrop(data);
     return;
   }
-  const { dx, y, t } = data;
+  const { bx, by, t } = data;
   // t : heure de départ de l'onde, dans le temps commun (voir sharedTime).
-  water.addRipple(new THREE.Vector2(seamX() + dx, y), t);
-}
-
-// Abscisse du bord commun aux deux écrans, dans le repère de cet écran :
-// bord droit pour l'écran de gauche, bord gauche pour celui de droite.
-// (Positions échangées par rapport à ce bord : fonctionne même si les deux
-// écrans n'ont pas la même taille.)
-function seamX() {
-  return SCREEN_INDEX === 0 ? camera.right : camera.left;
+  water.addRipple(toLocal(new THREE.Vector2(bx, by)), t);
 }
 
 // Temps commun à tous les écrans : l'heure du serveur (et non le chargement
@@ -212,7 +217,8 @@ function onPointerDown(event) {
     const local = water.mesh.worldToLocal(hits[0].point.clone());
     water.addRipple(local);
     // Position par rapport au bord commun, et heure du clic.
-    sendRipple({ dx: local.x - seamX(), y: local.y, t: sharedTime() });
+    const big = toBig(local);
+    sendRipple({ bx: big.x, by: big.y, t: sharedTime() });
   }
 }
 
@@ -227,7 +233,7 @@ window.addEventListener("resize", () => {
   const h = window.innerHeight * pixelRatio;
   floorRenderTarget.setSize(w, h);
   water.setResolution(w, h);
-  water.setLayout(SCREEN_INDEX, SCREEN_COUNT, camera.right);
+  water.setLayout(SCREEN_INDEX, camera.right, camera.top);
   renderFloor();
 });
 

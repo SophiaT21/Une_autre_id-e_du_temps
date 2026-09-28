@@ -91,13 +91,14 @@ function buildWaterFieldGLSL() {
       float nzSum = 0.0;
 
       float eps = 0.2;
-      // Position dans la grande flaque (plusieurs écrans côte à côte).
-      vec2 pw = p + uWorldOffset;
+      // Position dans la grande flaque (voir setLayout).
+      vec2 pw = uFlip * p + uWorldOffset;
       float hC = swellHeight(pw, time);
       float hX = swellHeight(pw + vec2(eps, 0.0), time);
       float hY = swellHeight(pw + vec2(0.0, eps), time);
       disp.z += hC;
-      nSum += vec2(hX - hC, hY - hC) / eps;
+      // Pente calculée dans la grande flaque, ramenée au repère de l'écran.
+      nSum += uFlip * vec2(hX - hC, hY - hC) / eps;
 
       accumulateRipples(p, time, disp, nSum, nzSum);
 
@@ -105,6 +106,13 @@ function buildWaterFieldGLSL() {
       normal = normalize(vec3(-nSum.x, -nSum.y, 1.0 - nzSum));
     }
   `;
+}
+
+// Transformation écran → grande flaque (voir setLayout).
+export function puddleLayout(index, halfHeight) {
+  return index === 0
+    ? { flip: 1, offset: new THREE.Vector2(0, 0) }
+    : { flip: -1, offset: new THREE.Vector2(0, 2 * halfHeight) };
 }
 
 export function createWater({ width, height, maxRipples, envMap, refractionMap }) {
@@ -132,10 +140,10 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uTreeGold: { value: new THREE.Color(0xa06a18) },
     // Plusieurs flaques côte à côte ne forment qu'une seule grande flaque
     // (voir setLayout) : houle, lumière et reflets d'arbres se raccordent.
-    uScreenIndex: { value: 0 },
-    uScreenCount: { value: 1 },
+    uFlip: { value: 1 },
     uWorldOffset: { value: new THREE.Vector2(0, 0) },
-    uBigCenterX: { value: 0 },
+    // Demi-largeur et demi-hauteur visibles d'un écran (unités monde).
+    uHalf: { value: new THREE.Vector2(1, 1) },
     uEnvMap: { value: envMap },
     uRefractionMap: { value: refractionMap },
     uResolution: { value: new THREE.Vector2(1, 1) },
@@ -151,6 +159,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniform vec2 uRipplePos[MAX_RIPPLES];
     uniform float uRippleStart[MAX_RIPPLES];
     uniform vec2 uWorldOffset;
+    uniform float uFlip;
 
     varying vec2 vBasePos;
     varying vec3 vWorldPos;
@@ -179,6 +188,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniform vec2 uRipplePos[MAX_RIPPLES];
     uniform float uRippleStart[MAX_RIPPLES];
     uniform vec2 uWorldOffset;
+    uniform float uFlip;
     uniform vec3 uDeepColor;
     uniform vec3 uShallowColor;
     uniform vec3 uEdgeColor;
@@ -187,9 +197,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniform vec3 uTreeWarm;
     uniform vec3 uTreeRed;
     uniform vec3 uTreeGold;
-    uniform float uScreenIndex;
-    uniform float uScreenCount;
-    uniform float uBigCenterX;
+    uniform vec2 uHalf;
     uniform samplerCube uEnvMap;
     uniform sampler2D uRefractionMap;
     uniform vec2 uResolution;
@@ -233,16 +241,19 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       // --- État plat : teinte vert-gris, plus sombre vers les bords pour
       // suggérer la profondeur, avec de grandes variations très lentes
       // (reflet d'un ciel couvert, nuages qui passent). ---
-      // Position dans la grande flaque, et abscisse écran de la grande flaque
-      // (0 à gauche du premier écran, 1 à droite du dernier).
-      vec2 bigPos = vBasePos + uWorldOffset;
-      float bigU = (screenUV.x + uScreenIndex) / uScreenCount;
-      float edgeAmount = smoothstep(20.0, 60.0, length(bigPos - vec2(uBigCenterX, 0.0)));
+      // Position dans la grande flaque (voir setLayout), en unités monde puis
+      // en unités de hauteur d'écran : qb.x ∈ [0, A] (A = largeur/hauteur
+      // d'un écran), qb.y ∈ [0, 2] — flaque 1 en bas, flaque 2 au-dessus, le
+      // bord commun à qb.y = 1.
+      vec2 bigPos = uFlip * vBasePos + uWorldOffset;
+      float A = uHalf.x / uHalf.y;
+      vec2 qb = vec2(bigPos.x + uHalf.x, bigPos.y + uHalf.y) / (2.0 * uHalf.y);
+      float edgeAmount = smoothstep(20.0, 60.0, length(bigPos - vec2(0.0, uHalf.y)));
       vec3 restColor = mix(uShallowColor, uEdgeColor, edgeAmount * 0.6);
       float clouds = fbm(bigPos * 0.035 + vec2(uTime * 0.006, uTime * 0.004) + N.xy * 2.0);
       restColor *= 0.7 + clouds * 0.6;
       // Ciel couvert plus lumineux d'un côté : léger dégradé diagonal.
-      restColor *= mix(0.85, 1.12, smoothstep(0.0, 1.0, screenUV.y * 0.7 + (1.0 - bigU) * 0.3));
+      restColor *= mix(0.85, 1.12, smoothstep(0.0, 1.0, (qb.x / A) * 0.7 + (1.0 - qb.y * 0.5) * 0.3));
 
       // Réfraction : fond rendu à part (voir main.js), lu avec un décalage
       // d'écran basé sur la normale locale — la surface reste transparente
@@ -260,11 +271,10 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       float wind = sin(uTime * 0.35) * 0.6 + sin(uTime * 0.83 + 1.3) * 0.3 + sin(uTime * 1.7 + 0.4) * 0.1;
       vec2 sway = vec2(wind * 0.5, sin(uTime * 0.5 + 0.7) * 0.12);
       // Le feuillage se déplace avec le vent : on décale l'échantillonnage.
-      vec2 tp = bigPos + N.xy * 4.0 - sway;
-      // Position dans la grande flaque en unités de hauteur d'écran
-      // (x ∈ [0, B], B = largeur totale de tous les écrans).
-      vec2 q = vec2((screenUV.x + uScreenIndex) * aspect, screenUV.y) + N.xy * 0.06;
-      float B = uScreenCount * aspect;
+      // (La normale est dans le repère de l'écran : uFlip la ramène dans
+      // celui de la grande flaque.)
+      vec2 tp = bigPos + uFlip * N.xy * 4.0 - sway;
+      vec2 q = qb + uFlip * N.xy * 0.06;
       // Couronnes placées juste au-delà du bord de la grande flaque : seule
       // une partie entre dans l'image. Certaines sont à cheval sur la
       // jonction entre deux écrans. (x, y, rayon)
@@ -274,18 +284,19 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       float leafEdge = (fbm(tp * 0.35) - 0.5) * 0.45 + (fbm(tp * 1.1 + 4.0 + flutter) - 0.5) * 0.2;
       for (int i = 0; i < 9; i++) {
         vec3 c;
-        // Bord gauche
-        if (i == 0) c = vec3(-0.08, 0.78, 0.30);
-        else if (i == 1) c = vec3(0.30, -0.12, 0.24);
-        else if (i == 2) c = vec3(-0.12, 0.18, 0.22);
-        // Bord droit
-        else if (i == 3) c = vec3(B + 0.08, 0.28, 0.32);
-        else if (i == 4) c = vec3(B - 0.40, 1.10, 0.27);
-        // Bas et haut, dont deux à cheval sur la jonction (au milieu)
-        else if (i == 5) c = vec3(B * 0.29, -0.14, 0.20);
-        else if (i == 6) c = vec3(B * 0.5 + 0.05, -0.15, 0.26);
-        else if (i == 7) c = vec3(B * 0.47, 1.13, 0.24);
-        else c = vec3(B * 0.79, -0.14, 0.20);
+        // Bas de la flaque 1 (qb.y = 0)
+        if (i == 0) c = vec3(A * 0.25, -0.12, 0.24);
+        else if (i == 1) c = vec3(A * 0.72, -0.14, 0.20);
+        // Bas de la flaque 2 (qb.y = 2)
+        else if (i == 2) c = vec3(A * 0.35, 2.13, 0.24);
+        else if (i == 3) c = vec3(A * 0.82, 2.10, 0.30);
+        // Côté qb.x = 0, dont une à cheval sur la jonction (qb.y = 1)
+        else if (i == 4) c = vec3(-0.08, 0.45, 0.28);
+        else if (i == 5) c = vec3(-0.10, 1.02, 0.30);
+        else if (i == 6) c = vec3(-0.10, 1.62, 0.24);
+        // Côté qb.x = A, dont une à cheval sur la jonction
+        else if (i == 7) c = vec3(A + 0.08, 0.62, 0.30);
+        else c = vec3(A + 0.06, 1.30, 0.28);
         // Chaque couronne suit le vent (1 unité écran = 40 unités monde)
         // plus sa propre petite oscillation.
         float fi = float(i);
@@ -356,14 +367,17 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniforms.uTime.value = time;
   }
 
-  // Place cette flaque dans une grande flaque de « count » écrans côte à
-  // côte (index 0 = le plus à gauche). halfWidth : demi-largeur visible d'un
-  // écran en unités monde (tous les écrans ont la même taille).
-  function setLayout(index, count, halfWidth) {
-    uniforms.uScreenIndex.value = index;
-    uniforms.uScreenCount.value = count;
-    uniforms.uWorldOffset.value.set(index * 2 * halfWidth, 0);
-    uniforms.uBigCenterX.value = -halfWidth + count * halfWidth;
+  // Place cette flaque dans la grande flaque formée par les deux écrans,
+  // qui se touchent par leur bord HAUT (écrans tournés en sens opposés).
+  // Repère de la grande flaque = repère de la flaque 1 ; la flaque 2 y est
+  // retournée d'un demi-tour et posée au-dessus de son bord haut :
+  //   grande = flip · locale + offset
+  // halfWidth / halfHeight : demi-dimensions visibles d'un écran (monde).
+  function setLayout(index, halfWidth, halfHeight) {
+    const layout = puddleLayout(index, halfHeight);
+    uniforms.uFlip.value = layout.flip;
+    uniforms.uWorldOffset.value.copy(layout.offset);
+    uniforms.uHalf.value.set(halfWidth, halfHeight);
   }
 
   function setResolution(w, h) {
