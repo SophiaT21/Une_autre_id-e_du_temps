@@ -1,0 +1,240 @@
+import * as THREE from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { createWater } from "./water.js";
+import { createFloor } from "./floor.js";
+import { createEnvMap } from "./sky.js";
+
+const container = document.getElementById("app");
+
+const pixelRatio = Math.min(window.devicePixelRatio, 2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(pixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x6fdccd, 1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+// Vue de dessus : caméra orthographique, aucune perspective.
+const VIEW_HEIGHT = 40;
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+camera.position.set(0, 0, 50);
+camera.lookAt(0, 0, 0);
+
+function updateCameraFrustum() {
+  const aspect = window.innerWidth / window.innerHeight;
+  const halfHeight = VIEW_HEIGHT / 2;
+  const halfWidth = halfHeight * aspect;
+  camera.left = -halfWidth;
+  camera.right = halfWidth;
+  camera.top = halfHeight;
+  camera.bottom = -halfHeight;
+  camera.updateProjectionMatrix();
+}
+updateCameraFrustum();
+
+// Assez large pour couvrir l'écran même en format très large.
+const WIDTH = 120;
+const HEIGHT = 56;
+
+// --- Fond sableux : rendu dans sa propre scène/texture --------------------
+// (c'est cette texture que l'eau échantillonne en réfraction, avec un
+// décalage basé sur sa normale locale).
+const floorScene = new THREE.Scene();
+floorScene.add(createFloor(WIDTH, HEIGHT));
+
+const floorRenderTarget = new THREE.WebGLRenderTarget(
+  window.innerWidth * pixelRatio,
+  window.innerHeight * pixelRatio
+);
+
+// Le fond est statique (pas de terme temporel dans son shader) : on le rend
+// une fois, pas à chaque frame.
+function renderFloor() {
+  renderer.setRenderTarget(floorRenderTarget);
+  renderer.render(floorScene, camera);
+  renderer.setRenderTarget(null);
+}
+
+// --- Environnement : ciel statique capturé une fois pour la réflexion -----
+const envMap = createEnvMap(renderer);
+
+// --- Eau --------------------------------------------------------------
+const MAX_RIPPLES = 24;
+// Deux flaques côte à côte (voir plus bas) : flaque.html = écran 0 (gauche),
+// flaque2.html = écran 1 (droite). Elles forment une seule grande flaque.
+const SCREEN_INDEX = Number(document.body.dataset.ecran || 0);
+const SCREEN_COUNT = 2;
+
+const water = createWater({
+  width: WIDTH,
+  height: HEIGHT,
+  maxRipples: MAX_RIPPLES,
+  envMap,
+  refractionMap: floorRenderTarget.texture,
+});
+water.setLayout(SCREEN_INDEX, SCREEN_COUNT, camera.right);
+scene.add(water.mesh);
+water.setResolution(window.innerWidth * pixelRatio, window.innerHeight * pixelRatio);
+renderFloor();
+
+// --- Post-traitement : bloom sur les hautes lumières spéculaires ----------
+const composer = new EffectComposer(
+  renderer,
+  new THREE.WebGLRenderTarget(
+    window.innerWidth * pixelRatio,
+    window.innerHeight * pixelRatio,
+    { type: THREE.HalfFloatType }
+  )
+);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.35,
+  0.4,
+  0.8
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+// --- Deux écrans d'eau reliés -----------------------------------------------
+// flaque.html (écran 0, à gauche) et flaque2.html (écran 1, à droite,
+// data-ecran="1") sont posés côte à côte et forment une seule grande flaque.
+// Chaque clic est envoyé à l'autre écran, qui crée la même onde au même
+// endroit de la grande flaque : elle démarre hors de son champ et arrive par
+// le bord commun.
+//
+// Les ondes passent par le serveur local (serveur.py) : ça marche entre
+// fenêtres, navigateurs et même ordinateurs différents. Si la page est servie
+// par un autre serveur, on se replie sur un canal du navigateur (même
+// navigateur, même machine seulement).
+const CLIENT_ID = Math.random().toString(36).slice(2);
+let useServer = false;
+let channel = null;
+
+function sendRipple(message) {
+  const data = { ...message, from: CLIENT_ID };
+  if (useServer) {
+    fetch("/onde", { method: "POST", body: JSON.stringify(data) }).catch(() => {});
+  } else if (channel) {
+    channel.postMessage(data);
+  }
+}
+
+// Goutte tombée de l'écran ciel (voir ciel.js) : x = position en fraction
+// de la largeur totale des flaques, y = position en hauteur (0-1), delay =
+// secondes avant l'impact. Chaque flaque place l'onde dans son propre repère ;
+// si l'impact est sur la voisine, l'onde entre par le bord commun.
+function receiveDrop({ x, y, delay }) {
+  const localX = x * SCREEN_COUNT - SCREEN_INDEX;
+  const worldX = camera.left + localX * (camera.right - camera.left);
+  const worldY = camera.bottom + y * (camera.top - camera.bottom);
+  water.addRipple(new THREE.Vector2(worldX, worldY), sharedTime() + delay);
+}
+
+function receiveRipple(data) {
+  if (data.from === CLIENT_ID) return;
+  if (data.type === "goutte") {
+    receiveDrop(data);
+    return;
+  }
+  const { dx, y, t } = data;
+  // t : heure de départ de l'onde, dans le temps commun (voir sharedTime).
+  water.addRipple(new THREE.Vector2(seamX() + dx, y), t);
+}
+
+// Abscisse du bord commun aux deux écrans, dans le repère de cet écran :
+// bord droit pour l'écran de gauche, bord gauche pour celui de droite.
+// (Positions échangées par rapport à ce bord : fonctionne même si les deux
+// écrans n'ont pas la même taille.)
+function seamX() {
+  return SCREEN_INDEX === 0 ? camera.right : camera.left;
+}
+
+// Temps commun à tous les écrans : l'heure du serveur (et non le chargement
+// de la page), pour que vent, houle et ondes soient synchronisés, même entre
+// deux ordinateurs dont les horloges diffèrent un peu. Modulo une heure pour
+// garder de la précision dans les shaders.
+let clockOffset = 0;
+
+function sharedTime() {
+  return (Date.now() / 1000 + clockOffset) % 3600;
+}
+
+// Mesure l'écart avec l'horloge du serveur : plusieurs essais, on garde le
+// plus rapide (le moins perturbé par le réseau).
+async function syncClock() {
+  let best = null;
+  for (let i = 0; i < 5; i++) {
+    const t0 = Date.now() / 1000;
+    const response = await fetch("/temps", { cache: "no-store" });
+    const { t } = await response.json();
+    const t1 = Date.now() / 1000;
+    if (!best || t1 - t0 < best.rtt) best = { rtt: t1 - t0, offset: t - (t0 + t1) / 2 };
+  }
+  clockOffset = best.offset;
+}
+
+async function connect() {
+  try {
+    await syncClock();
+    useServer = true;
+    const events = new EventSource("/evenements");
+    events.onmessage = (event) => receiveRipple(JSON.parse(event.data));
+    // Recale l'horloge de temps en temps.
+    setInterval(() => syncClock().catch(() => {}), 60000);
+  } catch {
+    // Pas de serveur.py : canal du navigateur.
+    channel = new BroadcastChannel("eau-interferences");
+    channel.addEventListener("message", (event) => receiveRipple(event.data));
+  }
+}
+connect();
+
+// --- Interaction : clic = onde d'interférence -------------------------------
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+
+function onPointerDown(event) {
+  pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObject(water.mesh, false);
+  if (hits.length > 0) {
+    const local = water.mesh.worldToLocal(hits[0].point.clone());
+    water.addRipple(local);
+    // Position par rapport au bord commun, et heure du clic.
+    sendRipple({ dx: local.x - seamX(), y: local.y, t: sharedTime() });
+  }
+}
+
+renderer.domElement.addEventListener("pointerdown", onPointerDown);
+
+window.addEventListener("resize", () => {
+  updateCameraFrustum();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+
+  const w = window.innerWidth * pixelRatio;
+  const h = window.innerHeight * pixelRatio;
+  floorRenderTarget.setSize(w, h);
+  water.setResolution(w, h);
+  water.setLayout(SCREEN_INDEX, SCREEN_COUNT, camera.right);
+  renderFloor();
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  water.update(sharedTime());
+  composer.render();
+}
+
+animate();
