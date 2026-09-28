@@ -56,6 +56,11 @@ const uniforms = {
   uStormLight: { value: new THREE.Color(0x6d7674) },
   uStormMid: { value: new THREE.Color(0x434b4d) },
   uStormDark: { value: new THREE.Color(0x22282a) },
+  // Éclairs (tempête) : illumination des nuages (0-1) autour de uFlashPos,
+  // et trait de l'éclair : x du haut, y du bas, graine, intensité.
+  uFlash: { value: 0 },
+  uFlashPos: { value: new THREE.Vector2(0.5, 0.8) },
+  uBolt: { value: new THREE.Vector4(0, 0, 0, 0) },
 };
 
 const material = new THREE.ShaderMaterial({
@@ -76,6 +81,9 @@ const material = new THREE.ShaderMaterial({
     uniform vec3 uStormLight;
     uniform vec3 uStormMid;
     uniform vec3 uStormDark;
+    uniform float uFlash;
+    uniform vec2 uFlashPos;
+    uniform vec4 uBolt;
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -131,6 +139,40 @@ const material = new THREE.ShaderMaterial({
       float glow = exp(-dot(q - sunPos, q - sunPos) * 5.0);
       // Le soleil voilé s'éteint sous l'orage.
       sky += vec3(0.1, 0.09, 0.07) * glow * (1.0 - uStorm);
+
+      // --- Éclair : les nuages s'illuminent de l'intérieur autour du point
+      // de l'éclair, surtout leurs parties épaisses et claires. ---
+      if (uFlash > 0.0) {
+        vec2 fd = q - uFlashPos;
+        float flashGlow = exp(-dot(fd, fd) * 1.3);
+        float cloudLit = 0.55 + 0.9 * smoothstep(0.3, 0.75, clouds);
+        sky += vec3(0.72, 0.78, 0.9) * uFlash * (0.2 + 0.8 * flashGlow) * cloudLit;
+      }
+      // Trait de l'éclair : ligne brisée qui descend du haut de l'écran
+      // jusqu'à uBolt.y, avec une ramification.
+      if (uBolt.w > 0.0) {
+        float seed = uBolt.z;
+        float by = q.y;
+        float bx = uBolt.x
+          + (fbm(vec2(by * 2.5, seed)) - 0.5) * 0.35
+          + (valueNoise(vec2(by * 24.0, seed + 5.0)) - 0.5) * 0.05;
+        float along = smoothstep(uBolt.y, uBolt.y + 0.04, by);
+        float dist = abs(q.x - bx);
+        float bolt = (1.0 - smoothstep(0.0012, 0.0035, dist)) * along;
+        float halo = exp(-dist * 55.0) * along;
+        // Ramification : part d'un point du trait et s'en écarte en descendant.
+        float yb = mix(1.0, uBolt.y, 0.35);
+        float side = hash(vec2(seed, 3.0)) < 0.5 ? -1.0 : 1.0;
+        float drop = yb - by;
+        if (drop > 0.0 && drop < 0.3) {
+          float bx2 = bx + side * drop * 0.55 + (valueNoise(vec2(by * 30.0, seed + 9.0)) - 0.5) * 0.04;
+          float d2 = abs(q.x - bx2);
+          float fade = 1.0 - drop / 0.3;
+          bolt = max(bolt, (1.0 - smoothstep(0.0008, 0.0025, d2)) * fade * 0.8);
+          halo = max(halo, exp(-d2 * 70.0) * fade * 0.6);
+        }
+        sky += vec3(0.92, 0.95, 1.0) * uBolt.w * (bolt * 1.6 + halo * 0.45);
+      }
 
       gl_FragColor = vec4(sky, 1.0);
     }
@@ -535,9 +577,12 @@ function launchDrop(clientX, clientY, auto) {
   };
   addDrop(params);
   channel.postMessage({ type: "drop", params });
-  // Un clic fait toujours son onde ; la pluie automatique, dans la limite
-  // de TEMPEST.puddleRate ondes par seconde.
-  if (!auto || allowPuddleRipple()) {
+  // Un clic fait toujours son onde. La pluie automatique : toutes ses
+  // gouttes en pluie légère ; en tempête, juste ce qu'il faut pour que le
+  // nombre d'ondes par seconde suive la force de la tempête (jusqu'à
+  // TEMPEST.puddleRate au plus fort) — l'eau s'agite en même temps que le
+  // ciel s'assombrit, et se calme avec lui.
+  if (!auto || Math.random() < puddleChance(streak)) {
     sendDropToPuddles(clientX / window.innerWidth, impactDelay(params, bounds), streak);
   }
 }
@@ -603,9 +648,10 @@ const TEMPEST = {
   // l'écran : 130/s ≈ une centaine de traits visibles en même temps).
   heavyRate: 130,
   // Nombre maximum d'ondes par seconde envoyées aux flaques par la pluie
-  // automatique (au-delà, les flaques satureraient) : pendant la tempête,
-  // seule une partie des gouttes fait une onde.
-  puddleRate: 2,
+  // automatique : pendant la tempête, seule une partie des gouttes fait une
+  // onde (fine et courte, voir water.js) — assez pour une eau très agitée,
+  // pas trop pour garder l'affichage fluide.
+  puddleRate: 12,
 };
 let tempestStart = Infinity;
 let tempestEnd = Infinity;
@@ -620,6 +666,49 @@ function startTempestNow() {
   // Si une tempête est déjà en cours, on la prolonge simplement.
   if (tempestLevel(now) <= 0) tempestStart = now;
   tempestEnd = now + THREE.MathUtils.randFloat(TEMPEST.minDuration, TEMPEST.maxDuration);
+}
+
+// --- Éclairs : pendant la tempête, de temps en temps ----------------------
+
+const LIGHTNING = {
+  // La tempête doit être au moins à ce niveau pour qu'il y ait des éclairs.
+  minTempest: 0.5,
+  // Intervalle entre deux éclairs, tiré au hasard (s).
+  minInterval: 3,
+  maxInterval: 9,
+  // Force de l'illumination des nuages (0-1).
+  flash: 0.9,
+};
+let lightningStart = -Infinity;
+let nextLightning = 0;
+
+// Intensité de l'éclair dt secondes après son début : deux ou trois
+// scintillements rapides puis une lueur qui s'éteint.
+function lightningEnvelope(dt) {
+  if (dt < 0 || dt > 1.2) return 0;
+  const pulse = (c, w) => Math.exp(-(((dt - c) / w) ** 2));
+  return Math.min(1, pulse(0.03, 0.045) + 0.65 * pulse(0.17, 0.05) + 0.45 * pulse(0.34, 0.08) + 0.2 * Math.exp(-dt * 4));
+}
+
+function updateLightning(now) {
+  const level = tempestLevel(now);
+  if (level < LIGHTNING.minTempest) {
+    // Premier éclair peu après que la tempête est bien installée.
+    nextLightning = now + THREE.MathUtils.randFloat(1, 3);
+  } else if (now >= nextLightning) {
+    lightningStart = now;
+    nextLightning = now + THREE.MathUtils.randFloat(LIGHTNING.minInterval, LIGHTNING.maxInterval);
+    // Position (en unités de hauteur d'écran, x de 0 à largeur/hauteur).
+    const aspect = window.innerWidth / window.innerHeight;
+    const x = THREE.MathUtils.randFloat(0.12, 0.88) * aspect;
+    uniforms.uBolt.value.set(x, THREE.MathUtils.randFloat(-0.1, 0.35), Math.random() * 100, 0);
+    uniforms.uFlashPos.value.set(x, THREE.MathUtils.randFloat(0.55, 0.95));
+  }
+  const e = lightningEnvelope(now - lightningStart);
+  uniforms.uFlash.value = e * LIGHTNING.flash;
+  // Le trait n'est visible que pendant les premiers scintillements.
+  uniforms.uBolt.value.w = now - lightningStart < 0.45 ? e : 0;
+  return e;
 }
 
 // Force de la tempête (0 = calme, 1 = au plus fort). Programme la suivante
@@ -652,18 +741,16 @@ function startAutoRain() {
   }, RAIN_TICK * 1000);
 }
 
-// Limite des ondes envoyées aux flaques par la pluie automatique (voir
-// TEMPEST.puddleRate) : réserve qui se remplit avec le temps.
-let puddleTokens = 3;
-let puddleTokensTime = performance.now();
-
-function allowPuddleRipple() {
-  const now = performance.now();
-  puddleTokens = Math.min(3, puddleTokens + ((now - puddleTokensTime) / 1000) * TEMPEST.puddleRate);
-  puddleTokensTime = now;
-  if (puddleTokens < 1) return false;
-  puddleTokens -= 1;
-  return true;
+// Probabilité qu'une goutte automatique fasse une onde sur les flaques,
+// selon la force de la tempête L au moment où elle part : ondes par seconde
+// voulues ÷ gouttes par seconde.
+function puddleChance(L) {
+  // Hors tempête : une onde pour chaque goutte.
+  if (L <= 0) return 1;
+  const lightRate = 1 / LIGHT_RAIN_INTERVAL;
+  const dropsPerSecond = THREE.MathUtils.lerp(lightRate, TEMPEST.heavyRate, L);
+  const ripplesPerSecond = THREE.MathUtils.lerp(lightRate, TEMPEST.puddleRate, L);
+  return Math.min(1, ripplesPerSecond / dropsPerSecond);
 }
 
 if (SCREEN === "ciel") {
@@ -730,7 +817,9 @@ function animate() {
     SCREEN === "ciel" ? tempestLevel(nowSeconds()) * TEMPEST.darkness : 0
   );
   uniforms.uStorm.value = storm;
-  if (hemiLight) hemiLight.intensity = 1.6 * (1 - storm * 0.45);
+  // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
+  const flash = SCREEN === "ciel" ? updateLightning(nowSeconds()) : 0;
+  if (hemiLight) hemiLight.intensity = 1.6 * (1 - storm * 0.45) * (1 + flash * 1.6);
   if (sunLight) sunLight.intensity = 1.1 * (1 - storm * 0.8);
   // Les reflets de la goutte s'éteignent avec le ciel : sinon elle paraît
   // trop claire sur un ciel d'orage.

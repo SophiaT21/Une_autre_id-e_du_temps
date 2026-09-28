@@ -52,7 +52,8 @@ function buildWaterFieldGLSL() {
         vec4 ripple = uRipples[i];
         float t = time - ripple.z;
         // Pas encore tombée (goutte du ciel en chute) ou terminée : ignorée.
-        if (t < 0.0 || t > RIPPLE_LIFETIME) continue;
+        // (Les ondes de tempête, qui s'amortissent plus vite, vivent moins.)
+        if (t < 0.0 || t > RIPPLE_LIFETIME / (1.0 + STORM_DECAY * ripple.w)) continue;
 
         vec2 offset = p - ripple.xy;
         float d = length(offset);
@@ -70,7 +71,9 @@ function buildWaterFieldGLSL() {
         // Temps écoulé depuis que le front d'onde a atteint ce point.
         float localT = t - d / speed;
         float front = smoothstep(-0.1, 0.35, localT);
-        float decay = exp(-max(localT, 0.0) * 0.6);
+        // Les ondes de tempête s'éteignent vite : l'agitation de l'eau suit
+        // la tempête du ciel et retombe avec elle.
+        float decay = exp(-max(localT, 0.0) * 0.6 * (1.0 + STORM_DECAY * stormy));
         // Énergie qui s'étale sur un cercle de plus en plus grand : amplitude
         // en ~1/sqrt(d), plus une montée douce au tout début (pas d'impact
         // brutal au point de clic).
@@ -125,6 +128,8 @@ export function puddleLayout(index, halfHeight) {
 // Durée de vie d'une onde (s) : au-delà, elle est trop amortie pour se voir,
 // même loin de son point de départ (elle met du temps à traverser l'écran).
 const RIPPLE_LIFETIME = 25;
+// Les ondes de tempête s'amortissent (1 + STORM_DECAY) fois plus vite.
+const STORM_DECAY = 1.5;
 
 export function createWater({ width, height, maxRipples, envMap, refractionMap }) {
   const geometry = new THREE.PlaneGeometry(width, height, 256, 256);
@@ -166,6 +171,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
   const vertexShader = `
     #define MAX_RIPPLES ${maxRipples}
     #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
+    #define STORM_DECAY ${STORM_DECAY.toFixed(2)}
 
     uniform float uTime;
     uniform int uRippleCount;
@@ -195,6 +201,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
   const fragmentShader = `
     #define MAX_RIPPLES ${maxRipples}
     #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
+    #define STORM_DECAY ${STORM_DECAY.toFixed(2)}
 
     uniform float uTime;
     uniform int uRippleCount;
@@ -383,9 +390,10 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     let oldestAge = -Infinity;
     for (let i = 0; i < maxRipples; i++) {
       const age = now - ripples[i].z;
+      const lifetime = RIPPLE_LIFETIME / (1 + STORM_DECAY * ripples[i].w);
       // Terminée, jamais utilisée, ou datant d'avant le retour à zéro du
       // temps commun (modulo une heure) : libre.
-      if (age > RIPPLE_LIFETIME || age < -60) return i;
+      if (age > lifetime || age < -60) return i;
       if (age >= 0 && age > oldestAge) {
         oldestAge = age;
         oldest = i;
@@ -405,7 +413,8 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     let count = 0;
     for (let i = 0; i < maxRipples; i++) {
       const age = time - ripples[i].z;
-      if (age <= RIPPLE_LIFETIME && age >= -60) count = i + 1;
+      const lifetime = RIPPLE_LIFETIME / (1 + STORM_DECAY * ripples[i].w);
+      if (age <= lifetime && age >= -60) count = i + 1;
     }
     uniforms.uRippleCount.value = count;
   }
