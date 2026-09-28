@@ -293,13 +293,19 @@ function placeTrees() {
 // Distance de la goutte à la caméra (devant les arbres).
 const DROP_DISTANCE = 10;
 // Hauteur de la goutte en fraction de la hauteur de l'écran.
-const DROP_SIZE = 0.04;
+const DROP_SIZE = 0.025;
 // Chaque goutte a une taille tirée au hasard entre ces deux facteurs de
 // DROP_SIZE (plus petite… ou plus grosse).
 const DROP_SIZE_MIN = 0.12;
 const DROP_SIZE_MAX = 1.3;
 // Temps de traversée de l'écran (s), départ arrêté, en accélérant.
 const DROP_FALL_TIME = 1.4;
+// En tempête, les gouttes deviennent des traits : jusqu'à (1 + STREAK_LENGTH)
+// fois plus longues, (1 + STREAK_THINNING) fois plus fines, et elles tombent
+// jusqu'à STREAK_SPEEDUP (fraction) plus vite.
+const STREAK_LENGTH = 5;
+const STREAK_THINNING = 4;
+const STREAK_SPEEDUP = 0.45;
 
 // --- Installation : la goutte tombe du ciel jusque dans les flaques ---------
 // Écran ciel (paysage, 1920×1080) suspendu au-dessus des deux écrans flaques
@@ -345,7 +351,7 @@ function impactDelay(params, bounds) {
 
 // Annonce aux flaques où et quand la goutte va tomber. u : position
 // horizontale dans le ciel (0 = gauche, 1 = droite).
-function sendDropToPuddles(u, delay) {
+function sendDropToPuddles(u, delay, storm = 0) {
   const { skyWidthPx, puddleWidthPx, puddleCount, mirrorX } = INSTALLATION;
   const totalPx = puddleWidthPx * puddleCount;
   // Position sous la goutte, en fraction de la largeur totale des flaques
@@ -354,7 +360,9 @@ function sendDropToPuddles(u, delay) {
   if (mirrorX) x = 1 - x;
   // y : position en hauteur, tirée au hasard (la même pour toutes les
   // flaques). delay : secondes avant l'impact.
-  const message = { type: "goutte", x, y: Math.random(), delay };
+  // storm : force de la tempête quand la goutte est partie (ondes plus
+  // fines sur les flaques).
+  const message = { type: "goutte", x, y: Math.random(), delay, storm };
   // Par le serveur (serveur.py) et par le navigateur : chaque flaque
   // n'écoute que l'un des deux, donc pas de doublon.
   fetch("/onde", { method: "POST", body: JSON.stringify(message) }).catch(() => {});
@@ -368,6 +376,11 @@ let dropSource = null;
 // leurs reflets selon l'orage.
 const dropMaterials = [];
 const DROP_ENV_INTENSITY = 1.2;
+// Teinte du corps de la goutte, par temps calme et sous l'orage.
+const DROP_COLOR = new THREE.Color(0xdde6e8);
+const DROP_STORM_COLOR = new THREE.Color(0x848e8e);
+// Opacité des gouttes au plus fort de l'orage (1 = opaques comme d'habitude).
+const DROP_STORM_OPACITY = 0.45;
 let dropHeight = 1;
 const drops = [];
 
@@ -394,7 +407,7 @@ function createDrop() {
   const material = new THREE.MeshPhysicalMaterial({
     // Corps très légèrement visible, pour que toute la silhouette (pointe
     // comprise) se lise sur le ciel.
-    color: 0xdde6e8,
+    color: DROP_COLOR.clone(),
     metalness: 0,
     roughness: 0.04,
     transmission: 0.88,
@@ -406,6 +419,9 @@ function createDrop() {
     specularIntensity: 1,
     envMap: dropEnvMap,
     envMapIntensity: DROP_ENV_INTENSITY,
+    // Pour pouvoir estomper les gouttes sous l'orage (voir animate).
+    transparent: true,
+    depthWrite: false,
   });
   dropMaterials.push(material);
 
@@ -474,7 +490,8 @@ function stormLevel(t) {
 function addDrop(params) {
   // Compte pour l'orage (sur les deux écrans, à partir de la même heure de
   // départ : le ciel s'assombrit pareil des deux côtés).
-  stormDrops.push(params.t0);
+  // La pluie automatique ne compte pas : seuls les clics font l'orage.
+  if (!params.auto) stormDrops.push(params.t0);
   if (!dropSource) return;
   const drop = dropSource.clone();
   drop.scale.setScalar(params.scale);
@@ -485,8 +502,14 @@ function addDrop(params) {
 }
 
 function spawnDrop(event) {
+  launchDrop(event.clientX, event.clientY, false);
+}
+
+// Lance une goutte à la position écran (clientX, clientY). auto : goutte de
+// la pluie automatique (ne compte pas pour l'orage, voir addDrop).
+function launchDrop(clientX, clientY, auto) {
   if (!dropSource) return;
-  pointer.set((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1);
+  pointer.set((clientX / window.innerWidth) * 2 - 1, -(clientY / window.innerHeight) * 2 + 1);
   raycaster.setFromCamera(pointer, camera);
   if (!raycaster.ray.intersectPlane(dropPlane, hit)) return;
 
@@ -494,20 +517,29 @@ function spawnDrop(event) {
   const screenHeight = bounds.top - bounds.bottom;
   // Accélération telle que la goutte traverse l'écran « ciel » en
   // DROP_FALL_TIME ; ensuite elle garde cette vitesse (vitesse limite).
-  const gravity = (2 * screenHeight * (1 + DROP_SIZE * 2)) / (DROP_FALL_TIME * DROP_FALL_TIME);
+  // Tempête : la goutte devient un trait (voir updateDrops) et tombe plus vite.
+  const streak = auto && SCREEN === "ciel" ? tempestLevel(nowSeconds()) : 0;
+  const fallTime = DROP_FALL_TIME * (1 - STREAK_SPEEDUP * streak);
+  const gravity = (2 * screenHeight * (1 + DROP_SIZE * 2)) / (fallTime * fallTime);
   const params = {
     // Même position horizontale que le clic, départ juste au-dessus du haut.
     x: hit.x,
     y0: bounds.top + screenHeight * DROP_SIZE,
     t0: nowSeconds(),
     gravity,
-    maxSpeed: gravity * DROP_FALL_TIME,
+    maxSpeed: gravity * fallTime,
     scale: (screenHeight * DROP_SIZE * THREE.MathUtils.randFloat(DROP_SIZE_MIN, DROP_SIZE_MAX)) / dropHeight,
     screenHeight,
+    auto,
+    streak,
   };
   addDrop(params);
   channel.postMessage({ type: "drop", params });
-  sendDropToPuddles(event.clientX / window.innerWidth, impactDelay(params, bounds));
+  // Un clic fait toujours son onde ; la pluie automatique, dans la limite
+  // de TEMPEST.puddleRate ondes par seconde.
+  if (!auto || allowPuddleRipple()) {
+    sendDropToPuddles(clientX / window.innerWidth, impactDelay(params, bounds), streak);
+  }
 }
 
 channel.addEventListener("message", (event) => {
@@ -537,7 +569,12 @@ function updateDrops() {
     drop.position.y = p.y0 - fallen;
     // Légèrement étirée par la vitesse.
     const stretch = 1 + Math.min(speed / (p.screenHeight * 2), 0.25);
-    drop.scale.set(p.scale / Math.sqrt(stretch), p.scale * stretch, p.scale / Math.sqrt(stretch));
+    // Tempête : très allongée et très fine, elle ne ressemble plus qu'à un
+    // trait de pluie.
+    const streak = p.streak || 0;
+    const long = stretch * (1 + streak * STREAK_LENGTH);
+    const thin = Math.sqrt(stretch) * (1 + streak * STREAK_THINNING);
+    drop.scale.set(p.scale / thin, p.scale * long, p.scale / thin);
     // Sortie par le bas de cet écran : on la retire.
     if (drop.position.y < bounds.bottom - p.screenHeight * DROP_SIZE * 3) {
       scene.remove(drop);
@@ -546,8 +583,98 @@ function updateDrops() {
   }
 }
 
+// --- Tempêtes : de temps en temps, le ciel s'assombrit et il pleut fort ---
+
+const TEMPEST = {
+  // Première tempête : ce nombre de secondes après le lancement de la page.
+  firstDelay: 10,
+  // Temps calme entre deux tempêtes suivantes, tiré au hasard (s).
+  minCalm: 60,
+  maxCalm: 150,
+  // Durée d'une tempête, hors montée et descente (s).
+  minDuration: 30,
+  maxDuration: 45,
+  // Temps pour que le ciel s'assombrisse / redevienne clair (s).
+  rampUp: 6,
+  rampDown: 10,
+  // Assombrissement du ciel au plus fort (1 = couleurs d'orage complètes).
+  darkness: 0.75,
+  // Gouttes par seconde au plus fort (en tempête un trait reste ~0,8 s à
+  // l'écran : 130/s ≈ une centaine de traits visibles en même temps).
+  heavyRate: 130,
+  // Nombre maximum d'ondes par seconde envoyées aux flaques par la pluie
+  // automatique (au-delà, les flaques satureraient) : pendant la tempête,
+  // seule une partie des gouttes fait une onde.
+  puddleRate: 2,
+};
+let tempestStart = Infinity;
+let tempestEnd = Infinity;
+
+function scheduleTempest(from, calm = THREE.MathUtils.randFloat(TEMPEST.minCalm, TEMPEST.maxCalm)) {
+  tempestStart = from + calm;
+  tempestEnd = tempestStart + THREE.MathUtils.randFloat(TEMPEST.minDuration, TEMPEST.maxDuration);
+}
+
+function startTempestNow() {
+  const now = nowSeconds();
+  // Si une tempête est déjà en cours, on la prolonge simplement.
+  if (tempestLevel(now) <= 0) tempestStart = now;
+  tempestEnd = now + THREE.MathUtils.randFloat(TEMPEST.minDuration, TEMPEST.maxDuration);
+}
+
+// Force de la tempête (0 = calme, 1 = au plus fort). Programme la suivante
+// une fois celle-ci terminée.
+function tempestLevel(t) {
+  if (t > tempestEnd + TEMPEST.rampDown) scheduleTempest(t);
+  const up = THREE.MathUtils.smoothstep(t, tempestStart, tempestStart + TEMPEST.rampUp);
+  const down = 1 - THREE.MathUtils.smoothstep(t, tempestEnd, tempestEnd + TEMPEST.rampDown);
+  return Math.min(up, down);
+}
+
+
+// --- Pluie automatique : gouttes aléatoires et espacées, sans clic ---------
+
+// Pluie légère : en moyenne une goutte toutes les LIGHT_RAIN_INTERVAL s,
+// à des moments aléatoires.
+const LIGHT_RAIN_INTERVAL = 4.5;
+const RAIN_TICK = 0.05;
+
+function startAutoRain() {
+  setInterval(() => {
+    // Gouttes par seconde : pluie légère → très forte pendant une tempête.
+    const rate = THREE.MathUtils.lerp(1 / LIGHT_RAIN_INTERVAL, TEMPEST.heavyRate, tempestLevel(nowSeconds()));
+    // Nombre de gouttes pour ce pas de temps, au hasard autour de la moyenne.
+    const expected = rate * RAIN_TICK;
+    const count = Math.floor(expected) + (Math.random() < expected % 1 ? 1 : 0);
+    for (let i = 0; i < count; i++) {
+      launchDrop(Math.random() * window.innerWidth, Math.random() * window.innerHeight, true);
+    }
+  }, RAIN_TICK * 1000);
+}
+
+// Limite des ondes envoyées aux flaques par la pluie automatique (voir
+// TEMPEST.puddleRate) : réserve qui se remplit avec le temps.
+let puddleTokens = 3;
+let puddleTokensTime = performance.now();
+
+function allowPuddleRipple() {
+  const now = performance.now();
+  puddleTokens = Math.min(3, puddleTokens + ((now - puddleTokensTime) / 1000) * TEMPEST.puddleRate);
+  puddleTokensTime = now;
+  if (puddleTokens < 1) return false;
+  puddleTokens -= 1;
+  return true;
+}
+
 if (SCREEN === "ciel") {
+  scheduleTempest(nowSeconds(), TEMPEST.firstDelay);
+  // Touche T : déclenche une tempête tout de suite (pour tester).
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "t" || event.key === "T") startTempestNow();
+  });
+  // Le clic reste possible pour lancer une goutte à la main.
   renderer.domElement.addEventListener("pointerdown", spawnDrop);
+  startAutoRain();
 }
 
 const composer = new EffectComposer(
@@ -597,15 +724,23 @@ function animate() {
   uniforms.uTime.value = t;
   timeUniform.value = t;
   windUniform.value = windAt(t);
-  const storm = stormLevel(nowSeconds()) * STORM_MAX;
+  // Assombrissement : orage des clics nombreux, ou tempête automatique.
+  const storm = Math.max(
+    stormLevel(nowSeconds()) * STORM_MAX,
+    SCREEN === "ciel" ? tempestLevel(nowSeconds()) * TEMPEST.darkness : 0
+  );
   uniforms.uStorm.value = storm;
   if (hemiLight) hemiLight.intensity = 1.6 * (1 - storm * 0.45);
   if (sunLight) sunLight.intensity = 1.1 * (1 - storm * 0.8);
   // Les reflets de la goutte s'éteignent avec le ciel : sinon elle paraît
   // trop claire sur un ciel d'orage.
+  // Sous l'orage, les gouttes s'assombrissent avec le ciel : peu de
+  // contraste entre les traits de pluie et le ciel.
   for (const m of dropMaterials) {
     m.envMapIntensity = DROP_ENV_INTENSITY * (1 - storm * 0.85);
-    m.specularIntensity = 1 - storm * 0.7;
+    m.specularIntensity = 1 - storm * 0.85;
+    m.color.copy(DROP_COLOR).lerp(DROP_STORM_COLOR, storm);
+    m.opacity = THREE.MathUtils.lerp(1, DROP_STORM_OPACITY, storm);
   }
   composer.render();
 }

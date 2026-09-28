@@ -66,7 +66,18 @@ function renderFloor() {
 const envMap = createEnvMap(renderer);
 
 // --- Eau --------------------------------------------------------------
-const MAX_RIPPLES = 24;
+// Nombre d'ondes gardées en même temps par écran (chaque clic compte sur les
+// deux écrans, plus les gouttes du ciel) : le maximum que la carte graphique
+// accepte (une case de mémoire du shader par onde, on en laisse 40 pour le
+// reste), plafonné à 256.
+const MAX_RIPPLES = Math.max(
+  24,
+  Math.min(
+    256,
+    renderer.capabilities.maxVertexUniforms - 40,
+    renderer.capabilities.maxFragmentUniforms - 40
+  )
+);
 // Deux flaques (voir plus bas) : flaque.html = écran 0 (à gauche),
 // flaque2.html = écran 1 (à droite). Écrans verticaux tournés en sens
 // opposés, qui se touchent par leur bord HAUT : ils forment une seule grande
@@ -140,15 +151,16 @@ function toLocal(big) {
 // Goutte tombée de l'écran ciel (voir ciel.js) : x = position de gauche à
 // droite dans l'installation (0 = bord gauche de la flaque 1, 1 = bord droit
 // de la flaque 2), y = position en profondeur (0-1, au hasard), delay =
-// secondes avant l'impact.
+// secondes avant l'impact, storm = force de la tempête quand la goutte est
+// partie (0-1) : ondes plus fines en tempête.
 // Écrans tournés : la gauche→droite de l'installation suit la hauteur de la
 // grande flaque (bas de la flaque 1 → bas de la flaque 2), la profondeur
 // suit sa largeur.
-function receiveDrop({ x, y, delay }) {
+function receiveDrop({ x, y, delay, storm = 0 }) {
   const hw = camera.right;
   const hh = camera.top;
   const big = new THREE.Vector2(-hw + y * 2 * hw, -hh + x * 4 * hh);
-  water.addRipple(toLocal(big), sharedTime() + delay);
+  water.addRipple(toLocal(big), sharedTime() + delay, storm);
 }
 
 function receiveRipple(data) {

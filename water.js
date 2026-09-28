@@ -48,16 +48,23 @@ function buildWaterFieldGLSL() {
     void accumulateRipples(vec2 p, float time, inout vec3 disp, inout vec2 nSum, inout float nzSum) {
       for (int i = 0; i < MAX_RIPPLES; i++) {
         if (i >= uRippleCount) break;
-        float t = time - uRippleStart[i];
-        if (t < 0.0) continue;
+        // xy : point de départ, z : heure de départ.
+        vec4 ripple = uRipples[i];
+        float t = time - ripple.z;
+        // Pas encore tombée (goutte du ciel en chute) ou terminée : ignorée.
+        if (t < 0.0 || t > RIPPLE_LIFETIME) continue;
 
-        vec2 offset = p - uRipplePos[i];
+        vec2 offset = p - ripple.xy;
         float d = length(offset);
         vec2 dir = d > 0.0001 ? offset / d : vec2(0.0, 0.0);
 
         float speed = 2.6;
+        // ripple.w : force de tempête de la goutte (0 = onde normale, 1 = en
+        // pleine tempête). En tempête : anneaux plus serrés, plus fins et
+        // plus bas, pour que l'eau reste lisible malgré la pluie battante.
+        float stormy = ripple.w;
         // Longueur d'onde plus courte : anneaux plus fins, comme une goutte.
-        float k = 3.8;
+        float k = 3.8 * (1.0 + 0.6 * stormy);
         float w = k * speed;
 
         // Temps écoulé depuis que le front d'onde a atteint ce point.
@@ -72,7 +79,7 @@ function buildWaterFieldGLSL() {
         float envelope = front * decay * spatialFalloff * birth;
         if (envelope < 0.001) continue;
 
-        float amplitude = 0.22;
+        float amplitude = 0.22 * (1.0 - 0.6 * stormy);
         float steepness = 0.35;
         float phase = d * k - t * w;
         float c = cos(phase) * envelope;
@@ -115,19 +122,24 @@ export function puddleLayout(index, halfHeight) {
     : { flip: -1, offset: new THREE.Vector2(0, 2 * halfHeight) };
 }
 
+// Durée de vie d'une onde (s) : au-delà, elle est trop amortie pour se voir,
+// même loin de son point de départ (elle met du temps à traverser l'écran).
+const RIPPLE_LIFETIME = 25;
+
 export function createWater({ width, height, maxRipples, envMap, refractionMap }) {
   const geometry = new THREE.PlaneGeometry(width, height, 256, 256);
 
-  const ripplePositions = [];
-  const rippleStarts = new Float32Array(maxRipples).fill(-999.0);
-  for (let i = 0; i < maxRipples; i++) ripplePositions.push(new THREE.Vector2(0, 0));
+  // Une onde = un vec4 (x, y, heure de départ, inutilisé) : une seule case
+  // de la mémoire du shader par onde, pour en garder le plus possible.
+  const ripples = [];
+  for (let i = 0; i < maxRipples; i++) ripples.push(new THREE.Vector4(0, 0, -999, 0));
   let rippleCursor = 0;
 
   const uniforms = {
     uTime: { value: 0 },
-    uRippleCount: { value: maxRipples },
-    uRipplePos: { value: ripplePositions },
-    uRippleStart: { value: rippleStarts },
+    // Le shader ne parcourt que les uRippleCount premières cases (voir update).
+    uRippleCount: { value: 0 },
+    uRipples: { value: ripples },
     // Palette d'eau naturelle (vert-gris désaturé) plutôt que turquoise vif.
     uDeepColor: { value: new THREE.Color(0x0f2427) },
     uShallowColor: { value: new THREE.Color(0x33504f) },
@@ -153,11 +165,11 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
 
   const vertexShader = `
     #define MAX_RIPPLES ${maxRipples}
+    #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
 
     uniform float uTime;
     uniform int uRippleCount;
-    uniform vec2 uRipplePos[MAX_RIPPLES];
-    uniform float uRippleStart[MAX_RIPPLES];
+    uniform vec4 uRipples[MAX_RIPPLES];
     uniform vec2 uWorldOffset;
     uniform float uFlip;
 
@@ -182,11 +194,11 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
 
   const fragmentShader = `
     #define MAX_RIPPLES ${maxRipples}
+    #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
 
     uniform float uTime;
     uniform int uRippleCount;
-    uniform vec2 uRipplePos[MAX_RIPPLES];
-    uniform float uRippleStart[MAX_RIPPLES];
+    uniform vec4 uRipples[MAX_RIPPLES];
     uniform vec2 uWorldOffset;
     uniform float uFlip;
     uniform vec3 uDeepColor;
@@ -356,15 +368,46 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
 
   // startTime : instant de départ de l'onde (par défaut maintenant) — une
   // onde venue de l'autre écran peut avoir démarré un peu plus tôt.
-  function addRipple(localPoint, startTime = uniforms.uTime.value) {
-    ripplePositions[rippleCursor].set(localPoint.x, localPoint.y);
-    rippleStarts[rippleCursor] = startTime;
+  // stormy : 0 = onde normale, 1 = onde fine de tempête (voir le shader).
+  function addRipple(localPoint, startTime = uniforms.uTime.value, stormy = 0) {
+    const slot = freeSlot();
+    ripples[slot].set(localPoint.x, localPoint.y, startTime, stormy);
+  }
+
+  // Place pour une nouvelle onde : d'abord une onde terminée ; sinon la plus
+  // ancienne déjà commencée (la plus faible) ; jamais une goutte du ciel
+  // encore en chute, sauf si toutes le sont.
+  function freeSlot() {
+    const now = uniforms.uTime.value;
+    let oldest = -1;
+    let oldestAge = -Infinity;
+    for (let i = 0; i < maxRipples; i++) {
+      const age = now - ripples[i].z;
+      // Terminée, jamais utilisée, ou datant d'avant le retour à zéro du
+      // temps commun (modulo une heure) : libre.
+      if (age > RIPPLE_LIFETIME || age < -60) return i;
+      if (age >= 0 && age > oldestAge) {
+        oldestAge = age;
+        oldest = i;
+      }
+    }
+    if (oldest >= 0) return oldest;
+    const slot = rippleCursor;
     rippleCursor = (rippleCursor + 1) % maxRipples;
-    uniforms.uRippleStart.needsUpdate = true;
+    return slot;
   }
 
   function update(time) {
     uniforms.uTime.value = time;
+    // Les places libres sont prises en priorité par le début (freeSlot) :
+    // les ondes actives restent groupées, le shader s'arrête après la
+    // dernière.
+    let count = 0;
+    for (let i = 0; i < maxRipples; i++) {
+      const age = time - ripples[i].z;
+      if (age <= RIPPLE_LIFETIME && age >= -60) count = i + 1;
+    }
+    uniforms.uRippleCount.value = count;
   }
 
   // Place cette flaque dans la grande flaque formée par les deux écrans,
