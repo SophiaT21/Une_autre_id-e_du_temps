@@ -338,7 +338,7 @@ const DROP_DISTANCE = 10;
 const DROP_SIZE = 0.025;
 // Chaque goutte a une taille tirée au hasard entre ces deux facteurs de
 // DROP_SIZE (plus petite… ou plus grosse).
-const DROP_SIZE_MIN = 0.4;
+const DROP_SIZE_MIN = 0.7;
 const DROP_SIZE_MAX = 1.3;
 // Temps de traversée de l'écran (s), départ arrêté, en accélérant.
 const DROP_FALL_TIME = 1.4;
