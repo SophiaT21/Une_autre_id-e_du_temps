@@ -11,6 +11,11 @@ html, body {
   background: #6fdccd;
 }
 
+/* Installation : aucun curseur visible (ni flèche, ni main), partout. */
+* {
+  cursor: none !important;
+}
+
 #app {
   position: fixed;
   inset: 0;

@@ -547,7 +547,6 @@ function updateDrops() {
 }
 
 if (SCREEN === "ciel") {
-  renderer.domElement.style.cursor = "pointer";
   renderer.domElement.addEventListener("pointerdown", spawnDrop);
 }
 
