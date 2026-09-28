@@ -130,6 +130,8 @@ export function puddleLayout(index, halfHeight) {
 const RIPPLE_LIFETIME = 25;
 // Les ondes de tempête s'amortissent (1 + STORM_DECAY) fois plus vite.
 const STORM_DECAY = 1.5;
+// Force de l'illumination de l'eau par un éclair à son maximum.
+const FLASH_REFLECTION = 0.28;
 
 export function createWater({ width, height, maxRipples, envMap, refractionMap }) {
   const geometry = new THREE.PlaneGeometry(width, height, 256, 256);
@@ -161,6 +163,9 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uWorldOffset: { value: new THREE.Vector2(0, 0) },
     // Demi-largeur et demi-hauteur visibles d'un écran (unités monde).
     uHalf: { value: new THREE.Vector2(1, 1) },
+    // Lumière de l'éclair du ciel reflétée par l'eau (0 = pas d'éclair,
+    // 1 = au plus fort), voir setLightning.
+    uFlash: { value: 0 },
     uEnvMap: { value: envMap },
     uRefractionMap: { value: refractionMap },
     uResolution: { value: new THREE.Vector2(1, 1) },
@@ -172,6 +177,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     #define MAX_RIPPLES ${maxRipples}
     #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
     #define STORM_DECAY ${STORM_DECAY.toFixed(2)}
+    #define FLASH_REFLECTION ${FLASH_REFLECTION.toFixed(2)}
 
     uniform float uTime;
     uniform int uRippleCount;
@@ -202,6 +208,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     #define MAX_RIPPLES ${maxRipples}
     #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
     #define STORM_DECAY ${STORM_DECAY.toFixed(2)}
+    #define FLASH_REFLECTION ${FLASH_REFLECTION.toFixed(2)}
 
     uniform float uTime;
     uniform int uRippleCount;
@@ -217,6 +224,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniform vec3 uTreeRed;
     uniform vec3 uTreeGold;
     uniform vec2 uHalf;
+    uniform float uFlash;
     uniform samplerCube uEnvMap;
     uniform sampler2D uRefractionMap;
     uniform vec2 uResolution;
@@ -366,6 +374,14 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       // Crête : reflet du ciel un peu plus lumineux, pas du blanc.
       color = mix(color, mix(color, uGlowColor, 0.5), crestWhite * 0.35);
 
+      // --- Éclair : la surface de l'eau reflète la lumière du ciel. Lueur
+      // diffuse blanc-bleuté sur toute la flaque, ajoutée par-dessus le
+      // reste (ondes et reflets restent visibles), un peu plus forte en
+      // bordure de reflet (Fresnel) comme une vraie surface d'eau. ---
+      if (uFlash > 0.0) {
+        color += vec3(0.78, 0.84, 1.0) * uFlash * FLASH_REFLECTION * (0.85 + 0.6 * fresnel);
+      }
+
       gl_FragColor = vec4(color, 1.0);
     }
   `;
@@ -432,9 +448,14 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniforms.uHalf.value.set(halfWidth, halfHeight);
   }
 
+  // Lumière de l'éclair reflétée (0-1), même rythme que le ciel.
+  function setLightning(intensity) {
+    uniforms.uFlash.value = intensity;
+  }
+
   function setResolution(w, h) {
     uniforms.uResolution.value.set(w, h);
   }
 
-  return { mesh, addRipple, update, setResolution, setLayout };
+  return { mesh, addRipple, update, setResolution, setLayout, setLightning };
 }

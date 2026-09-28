@@ -412,6 +412,14 @@ function sendDropToPuddles(u, delay, storm = 0) {
 }
 const puddleChannel = new BroadcastChannel("eau-interferences");
 
+// Annonce un éclair aux flaques, avec sa force (même valeur que le flash
+// du ciel) : elles rejouent la même courbe de lumière (lightningEnvelope).
+function sendLightningToPuddles() {
+  const message = { type: "eclair", flash: LIGHTNING.flash };
+  fetch("/onde", { method: "POST", body: JSON.stringify(message) }).catch(() => {});
+  puddleChannel.postMessage(message);
+}
+
 
 let dropSource = null;
 // Matériaux de la goutte (partagés par toutes les copies), pour ajuster
@@ -703,6 +711,9 @@ function updateLightning(now) {
     const x = THREE.MathUtils.randFloat(0.12, 0.88) * aspect;
     uniforms.uBolt.value.set(x, THREE.MathUtils.randFloat(-0.1, 0.35), Math.random() * 100, 0);
     uniforms.uFlashPos.value.set(x, THREE.MathUtils.randFloat(0.55, 0.95));
+    // La flaque reflète la lumière de l'éclair, au même moment et au même
+    // rythme (voir main.js).
+    sendLightningToPuddles();
   }
   const e = lightningEnvelope(now - lightningStart);
   uniforms.uFlash.value = e * LIGHTNING.flash;

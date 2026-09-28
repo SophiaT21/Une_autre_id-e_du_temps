@@ -163,10 +163,32 @@ function receiveDrop({ x, y, delay, storm = 0 }) {
   water.addRipple(toLocal(big), sharedTime() + delay, storm);
 }
 
+// --- Lumière des éclairs de l'écran ciel, reflétée par l'eau --------------
+
+// Dernier éclair : heure de réception (temps local) et force.
+let lightning = { start: -Infinity, flash: 0 };
+
+// Même courbe que le flash du ciel (voir lightningEnvelope, ciel.js) :
+// scintillements successifs rapides puis lueur qui s'éteint.
+function lightningEnvelope(dt) {
+  if (dt < 0 || dt > 1.2) return 0;
+  const pulse = (c, w) => Math.exp(-(((dt - c) / w) ** 2));
+  return Math.min(1, pulse(0.03, 0.045) + 0.65 * pulse(0.17, 0.05) + 0.45 * pulse(0.34, 0.08) + 0.2 * Math.exp(-dt * 4));
+}
+
+function updateLightning() {
+  const dt = performance.now() / 1000 - lightning.start;
+  water.setLightning(lightningEnvelope(dt) * lightning.flash);
+}
+
 function receiveRipple(data) {
   if (data.from === CLIENT_ID) return;
   if (data.type === "goutte") {
     receiveDrop(data);
+    return;
+  }
+  if (data.type === "eclair") {
+    lightning = { start: performance.now() / 1000, flash: data.flash };
     return;
   }
   const { bx, by, t } = data;
@@ -252,6 +274,7 @@ window.addEventListener("resize", () => {
 function animate() {
   requestAnimationFrame(animate);
   water.update(sharedTime());
+  updateLightning();
   composer.render();
 }
 
