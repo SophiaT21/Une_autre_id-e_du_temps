@@ -173,8 +173,8 @@ function receiveDrop({ x, y, delay, storm = 0 }) {
 const DROP_SOUND_FILES = ["Goutte1.mp3", "Goutte2.mp3", "Goutte3.mp3"];
 // Chaque goutte a sa propre intensité, tirée au hasard entre ces deux
 // volumes (0-1) : gouttes plus ou moins fortes, plus ou moins proches.
-const DROP_SOUND_MIN_VOLUME = 0.25;
-const DROP_SOUND_MAX_VOLUME = 1;
+const DROP_SOUND_MIN_VOLUME = 0.12;
+const DROP_SOUND_MAX_VOLUME = 0.5;
 // Nombre maximum de sons de goutte en même temps sur un écran (pendant la
 // tempête, les gouttes suivantes restent muettes).
 const MAX_DROP_SOUNDS = 8;
