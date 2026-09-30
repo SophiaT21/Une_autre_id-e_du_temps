@@ -137,6 +137,16 @@ const FLASH_REFLECTION = 0.28;
 // ciel (uStorm de ciel.js, ~0,75 au plus fort).
 const STORM_DARKENING = 0.8;
 const STORM_DESATURATION = 0.5;
+// Nuages de l'écran ciel reflétés par l'eau : force du reflet (0 = aucun,
+// 1 = on ne voit plus que le ciel) et contraste clair/sombre des nuages.
+const CLOUD_REFLECTION = 0.3;
+const CLOUD_CONTRAST = 0.6;
+// Position du ciel au-dessus des flaques (mêmes valeurs que INSTALLATION
+// dans ciel.js) : ciel de 1920 × 1080 px centré au-dessus des deux flaques
+// (1080 px chacune de gauche à droite, 1920 px en profondeur). En hauteurs
+// d'écran : décalage entre le bord de la grande flaque et celui du ciel.
+const SKY_OFFSET_X = (2 * 1080 - 1920) / 2 / 1080;
+const SKY_OFFSET_Y = (1920 - 1080) / 2 / 1080;
 
 export function createWater({ width, height, maxRipples, envMap, refractionMap }) {
   const geometry = new THREE.PlaneGeometry(width, height, 256, 256);
@@ -173,6 +183,10 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uFlash: { value: 0 },
     // Assombrissement du ciel (0 = ciel clair, ~0,75 = orage), voir setStorm.
     uStorm: { value: 0 },
+    // Couleurs du ciel calme (mêmes que ciel.js), pour le reflet des nuages.
+    uSkyLight: { value: new THREE.Color(0xc4cbc6) },
+    uSkyMid: { value: new THREE.Color(0x8e9a97) },
+    uSkyDark: { value: new THREE.Color(0x4f5d5d) },
     uEnvMap: { value: envMap },
     uRefractionMap: { value: refractionMap },
     uResolution: { value: new THREE.Vector2(1, 1) },
@@ -220,12 +234,19 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     #define FLASH_REFLECTION ${FLASH_REFLECTION.toFixed(2)}
     #define STORM_DARKENING ${STORM_DARKENING.toFixed(2)}
     #define STORM_DESATURATION ${STORM_DESATURATION.toFixed(2)}
+    #define CLOUD_REFLECTION ${CLOUD_REFLECTION.toFixed(3)}
+    #define CLOUD_CONTRAST ${CLOUD_CONTRAST.toFixed(3)}
+    #define SKY_OFFSET_X ${SKY_OFFSET_X.toFixed(5)}
+    #define SKY_OFFSET_Y ${SKY_OFFSET_Y.toFixed(5)}
 
     uniform float uTime;
     uniform int uRippleCount;
     uniform vec4 uRipples[MAX_RIPPLES];
     uniform vec2 uWorldOffset;
     uniform float uFlip;
+    uniform vec3 uSkyLight;
+    uniform vec3 uSkyMid;
+    uniform vec3 uSkyDark;
     uniform vec3 uDeepColor;
     uniform vec3 uShallowColor;
     uniform vec3 uEdgeColor;
@@ -255,6 +276,27 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
         a *= 0.5;
       }
       return v;
+    }
+
+    // Nuages de l'écran ciel : exactement le même calcul que dans ciel.js
+    // (même bruit, même vent, même heure), q en hauteurs d'écran du ciel.
+    float skyFbm(vec2 p) {
+      float v = 0.0;
+      float a = 0.5;
+      for (int i = 0; i < 5; i++) {
+        v += a * valueNoise(p);
+        p = p * 2.03 + 17.1;
+        a *= 0.5;
+      }
+      return v;
+    }
+    float skyClouds(vec2 q, float t) {
+      float wind = sin(t * 0.35) * 0.6 + sin(t * 0.83 + 1.3) * 0.3 + sin(t * 1.7 + 0.4) * 0.1;
+      vec2 cp = vec2(q.x * 0.9, q.y * 1.5) * 1.2 + vec2(t * 0.02 + wind * 0.01, t * 0.004);
+      vec2 warp = vec2(skyFbm(cp + vec2(0.0, t * 0.01)), skyFbm(cp + vec2(5.2, 1.3) - t * 0.008));
+      float clouds = skyFbm(cp + warp * 0.55);
+      float detail = skyFbm(cp * 2.2 - warp * 0.4 + t * 0.015);
+      return clouds * 0.8 + detail * 0.2 - uStorm * 0.18;
     }
 
     void main() {
@@ -289,8 +331,14 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       vec2 qb = vec2(bigPos.x + uHalf.x, bigPos.y + uHalf.y) / (2.0 * uHalf.y);
       float edgeAmount = smoothstep(20.0, 60.0, length(bigPos - vec2(0.0, uHalf.y)));
       vec3 restColor = mix(uShallowColor, uEdgeColor, edgeAmount * 0.6);
-      float clouds = fbm(bigPos * 0.035 + vec2(uTime * 0.006, uTime * 0.004) + N.xy * 2.0);
-      restColor *= 0.7 + clouds * 0.6;
+      // Nuages de l'écran ciel, juste au-dessus : la gauche→droite de
+      // l'installation (qb.y) est la largeur du ciel, la profondeur (qb.x)
+      // sa hauteur. Les ondes déforment le reflet.
+      vec2 skyQ = vec2(qb.y - SKY_OFFSET_X, qb.x - SKY_OFFSET_Y) + N.yx * 0.06;
+      float clouds = skyClouds(skyQ, uTime);
+      vec3 skyReflect = mix(uSkyDark, uSkyMid, smoothstep(0.3, 0.55, clouds));
+      skyReflect = mix(skyReflect, uSkyLight, smoothstep(0.5, 0.75, clouds));
+      restColor *= 1.0 - CLOUD_CONTRAST * 0.5 + smoothstep(0.3, 0.75, clouds) * CLOUD_CONTRAST;
       // Ciel couvert plus lumineux d'un côté : léger dégradé diagonal.
       restColor *= mix(0.85, 1.12, smoothstep(0.0, 1.0, (qb.x / A) * 0.7 + (1.0 - qb.y * 0.5) * 0.3));
 
@@ -353,6 +401,9 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       treeColor = mix(treeColor, uTreeGold, smoothstep(0.55, 0.8, fbm(tp * 0.3 + 37.0)) * 0.8);
       treeColor *= mix(0.45, 1.0, smoothstep(0.25, 0.6, fbm(tp * 0.6 + 2.0)));
       color = mix(color, treeColor, treeMask * 0.8);
+
+      // Reflet des nuages du ciel (pas là où un arbre se reflète).
+      color = mix(color, skyReflect, CLOUD_REFLECTION * (1.0 - treeMask * 0.8));
 
       // Reflet large et doux façon ciel diffus : toujours présent, jamais de
       // hotspot ponctuel au repos (exposant bas = tache large).
