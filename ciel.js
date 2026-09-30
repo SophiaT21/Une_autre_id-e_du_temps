@@ -412,6 +412,21 @@ function sendDropToPuddles(u, delay, storm = 0) {
 }
 const puddleChannel = new BroadcastChannel("eau-interferences");
 
+// Envoie aux flaques l'assombrissement du ciel (uStorm), quelques fois par
+// seconde quand il change, et de temps en temps sinon (flaque ouverte après
+// le ciel).
+let sentStorm = -1;
+let lastStormSent = 0;
+function sendStormToPuddles(storm, now) {
+  const changed = Math.abs(storm - sentStorm) > 0.005;
+  if (now - lastStormSent < (changed ? 0.2 : 2)) return;
+  sentStorm = storm;
+  lastStormSent = now;
+  const message = { type: "ciel", storm };
+  fetch("/onde", { method: "POST", body: JSON.stringify(message) }).catch(() => {});
+  puddleChannel.postMessage(message);
+}
+
 // Annonce un éclair aux flaques, avec sa force (même valeur que le flash
 // du ciel) : elles rejouent la même courbe de lumière (lightningEnvelope).
 function sendLightningToPuddles() {
@@ -526,6 +541,19 @@ function nowSeconds() {
   return Date.now() / 1000;
 }
 
+// Force de la tempête du parapluie (0-1), progressive : quand le parapluie
+// s'ouvre, elle monte en TEMPEST.rampUp s ; quand il se ferme, elle retombe
+// en TEMPEST.rampDown s (au lieu de passer d'un coup de 0 à 1).
+let umbrellaRamp = 0;
+let umbrellaRampTime = nowSeconds();
+function umbrellaLevel(now = nowSeconds()) {
+  const dt = Math.max(0, now - umbrellaRampTime);
+  umbrellaRampTime = now;
+  if (umbrellaState > umbrellaRamp) umbrellaRamp = Math.min(umbrellaState, umbrellaRamp + dt / TEMPEST.rampUp);
+  else umbrellaRamp = Math.max(umbrellaState, umbrellaRamp - dt / TEMPEST.rampDown);
+  return THREE.MathUtils.smoothstep(umbrellaRamp, 0, 1);
+}
+
 // Ajoute une goutte à la scène. params : { x, y0, t0, gravity, maxSpeed, scale }.
 // --- Orage : beaucoup de gouttes en peu de temps assombrissent le ciel ---
 
@@ -585,7 +613,7 @@ function launchDrop(clientX, clientY, auto) {
   // Accélération telle que la goutte traverse l'écran « ciel » en
   // DROP_FALL_TIME ; ensuite elle garde cette vitesse (vitesse limite).
   // Tempête : la goutte devient un trait (voir updateDrops) et tombe plus vite.
- const streak = auto && SCREEN === "ciel" ? umbrellaState : 0;
+  const streak = auto && SCREEN === "ciel" ? umbrellaLevel() : 0;
   const fallTime = DROP_FALL_TIME * (1 - STREAK_SPEEDUP * streak);
   const gravity = (2 * screenHeight * (1 + DROP_SIZE * 2)) / (fallTime * fallTime);
   const params = {
@@ -759,11 +787,7 @@ const RAIN_TICK = 0.05;
 function startAutoRain() {
   setInterval(() => {
     // Gouttes par seconde : pluie légère → très forte pendant une tempête.
-    const rate = THREE.MathUtils.lerp(
-  1 / LIGHT_RAIN_INTERVAL,
-  TEMPEST.heavyRate,
-  umbrellaState
-);
+    const rate = THREE.MathUtils.lerp(1 / LIGHT_RAIN_INTERVAL, TEMPEST.heavyRate, umbrellaLevel());
     // Nombre de gouttes pour ce pas de temps, au hasard autour de la moyenne.
     const expected = rate * RAIN_TICK;
     const count = Math.floor(expected) + (Math.random() < expected % 1 ? 1 : 0);
@@ -845,10 +869,11 @@ function animate() {
   windUniform.value = windAt(t);
   // Assombrissement : orage des clics nombreux, ou tempête automatique.
   const storm = Math.max(
-  stormLevel(nowSeconds()) * STORM_MAX,
-  SCREEN === "ciel" ? umbrellaState * TEMPEST.darkness : 0
-);
+    stormLevel(nowSeconds()) * STORM_MAX,
+    SCREEN === "ciel" ? umbrellaLevel() * TEMPEST.darkness : 0
+  );
   uniforms.uStorm.value = storm;
+  if (SCREEN === "ciel") sendStormToPuddles(storm, nowSeconds());
   // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
   const flash = SCREEN === "ciel" ? updateLightning(nowSeconds()) : 0;
   if (hemiLight) hemiLight.intensity = 1.6 * (1 - storm * 0.45) * (1 + flash * 1.6);

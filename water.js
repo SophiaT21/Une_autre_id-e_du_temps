@@ -132,6 +132,11 @@ const RIPPLE_LIFETIME = 25;
 const STORM_DECAY = 1.5;
 // Force de l'illumination de l'eau par un éclair à son maximum.
 const FLASH_REFLECTION = 0.28;
+// Assombrissement de l'eau quand le ciel s'assombrit (orage) : part de la
+// luminosité perdue et de la couleur grisée, par unité d'assombrissement du
+// ciel (uStorm de ciel.js, ~0,75 au plus fort).
+const STORM_DARKENING = 0.8;
+const STORM_DESATURATION = 0.5;
 
 export function createWater({ width, height, maxRipples, envMap, refractionMap }) {
   const geometry = new THREE.PlaneGeometry(width, height, 256, 256);
@@ -166,6 +171,8 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     // Lumière de l'éclair du ciel reflétée par l'eau (0 = pas d'éclair,
     // 1 = au plus fort), voir setLightning.
     uFlash: { value: 0 },
+    // Assombrissement du ciel (0 = ciel clair, ~0,75 = orage), voir setStorm.
+    uStorm: { value: 0 },
     uEnvMap: { value: envMap },
     uRefractionMap: { value: refractionMap },
     uResolution: { value: new THREE.Vector2(1, 1) },
@@ -178,6 +185,8 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
     #define STORM_DECAY ${STORM_DECAY.toFixed(2)}
     #define FLASH_REFLECTION ${FLASH_REFLECTION.toFixed(2)}
+    #define STORM_DARKENING ${STORM_DARKENING.toFixed(2)}
+    #define STORM_DESATURATION ${STORM_DESATURATION.toFixed(2)}
 
     uniform float uTime;
     uniform int uRippleCount;
@@ -209,6 +218,8 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     #define RIPPLE_LIFETIME ${RIPPLE_LIFETIME.toFixed(1)}
     #define STORM_DECAY ${STORM_DECAY.toFixed(2)}
     #define FLASH_REFLECTION ${FLASH_REFLECTION.toFixed(2)}
+    #define STORM_DARKENING ${STORM_DARKENING.toFixed(2)}
+    #define STORM_DESATURATION ${STORM_DESATURATION.toFixed(2)}
 
     uniform float uTime;
     uniform int uRippleCount;
@@ -225,6 +236,7 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniform vec3 uTreeGold;
     uniform vec2 uHalf;
     uniform float uFlash;
+    uniform float uStorm;
     uniform samplerCube uEnvMap;
     uniform sampler2D uRefractionMap;
     uniform vec2 uResolution;
@@ -374,6 +386,14 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
       // Crête : reflet du ciel un peu plus lumineux, pas du blanc.
       color = mix(color, mix(color, uGlowColor, 0.5), crestWhite * 0.35);
 
+      // --- Orage : l'eau reflète un ciel assombri, elle s'assombrit et se
+      // grise avec lui (ondes et reflets restent visibles). ---
+      if (uStorm > 0.0) {
+        float grey = dot(color, vec3(0.299, 0.587, 0.114));
+        color = mix(color, vec3(grey), uStorm * STORM_DESATURATION);
+        color *= 1.0 - uStorm * STORM_DARKENING;
+      }
+
       // --- Éclair : la surface de l'eau reflète la lumière du ciel. Lueur
       // diffuse blanc-bleuté sur toute la flaque, ajoutée par-dessus le
       // reste (ondes et reflets restent visibles), un peu plus forte en
@@ -453,9 +473,14 @@ export function createWater({ width, height, maxRipples, envMap, refractionMap }
     uniforms.uFlash.value = intensity;
   }
 
+  // Assombrissement du ciel (même valeur que uStorm de ciel.js).
+  function setStorm(level) {
+    uniforms.uStorm.value = level;
+  }
+
   function setResolution(w, h) {
     uniforms.uResolution.value.set(w, h);
   }
 
-  return { mesh, addRipple, update, setResolution, setLayout, setLightning };
+  return { mesh, addRipple, update, setResolution, setLayout, setLightning, setStorm };
 }

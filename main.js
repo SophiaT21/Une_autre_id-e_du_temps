@@ -181,8 +181,30 @@ function updateLightning() {
   water.setLightning(lightningEnvelope(dt) * lightning.flash);
 }
 
+// --- Assombrissement du ciel (orage), reflété par l'eau -------------------
+
+// Dernière valeur reçue de l'écran ciel, et valeur affichée : elle la
+// rejoint en douceur (les messages arrivent quelques fois par seconde).
+let skyStorm = 0;
+let shownStorm = 0;
+let lastStormFrame = performance.now();
+
+function updateStorm() {
+  const now = performance.now();
+  const dt = (now - lastStormFrame) / 1000;
+  lastStormFrame = now;
+  shownStorm += (skyStorm - shownStorm) * (1 - Math.exp(-dt / 0.3));
+  water.setStorm(shownStorm);
+}
+
 function receiveRipple(data) {
   if (data.from === CLIENT_ID) return;
+  if (data.type === "ciel") {
+    skyStorm = data.storm;
+    return;
+  }
+  // État du parapluie : pour l'écran ciel seulement.
+  if (data.type === "umbrella") return;
   if (data.type === "goutte") {
     receiveDrop(data);
     return;
@@ -275,6 +297,7 @@ function animate() {
   requestAnimationFrame(animate);
   water.update(sharedTime());
   updateLightning();
+  updateStorm();
   composer.render();
 }
 
