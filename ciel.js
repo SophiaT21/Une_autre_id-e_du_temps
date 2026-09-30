@@ -199,32 +199,130 @@ const timeUniform = { value: 0 };
 // Hauteur du modèle, mesurée au chargement (sert au balancement).
 const treeHeightUniform = { value: 16 };
 
+// Vent dans les arbres : la plupart du temps calme (mouvement d'origine,
+// discret, dans les deux sens), et de temps en temps, au hasard, un coup de
+// vent fort qui pousse les feuillages vers la droite (réglages ci-dessous,
+// 1 = mouvement d'origine), avec le son vent.mp3.
+const TREE_WIND = {
+  // Sens du vent : 1 = vers la droite, -1 = vers la gauche.
+  direction: 1,
+  // Inclinaison permanente du feuillage dans le sens du vent (0-1), même
+  // entre deux rafales ; les rafales le poussent plus loin (jusqu'à 1).
+  lean: 0.4,
+  // Balancement de tout l'arbre (tronc, branches et feuilles ensemble).
+  sway: 4,
+  // Vagues de vent qui traversent le feuillage (grappes de feuilles qui
+  // ondulent les unes après les autres).
+  gustWaves: 1.8,
+  // Frémissement rapide des feuilles, plus fort pendant les rafales.
+  flutter: 3.5,
+};
+
+// Coups de vent fort : quand ils arrivent et combien de temps ils durent.
+const STRONG_WIND = {
+  // Temps calme entre deux coups de vent, tiré au hasard (s).
+  minCalm: 20,
+  maxCalm: 60,
+  // Durée d'un coup de vent, hors montée et descente, tirée au hasard (s).
+  minDuration: 10,
+  maxDuration: 25,
+  // Temps pour que le vent se lève / retombe (s).
+  rampUp: 3,
+  rampDown: 6,
+  // Son du vent fort (volume au plus fort du vent, 0-1).
+  soundFile: "vent.mp3",
+  soundVolume: 1,
+};
+
+// Force du coup de vent (0 = calme, 1 = vent fort), partagée avec le shader.
+const windStrengthUniform = { value: 0 };
+let strongWindStart = Infinity;
+let strongWindEnd = Infinity;
+
+function scheduleStrongWind(from) {
+  strongWindStart = from + THREE.MathUtils.randFloat(STRONG_WIND.minCalm, STRONG_WIND.maxCalm);
+  strongWindEnd = strongWindStart + THREE.MathUtils.randFloat(STRONG_WIND.minDuration, STRONG_WIND.maxDuration);
+}
+scheduleStrongWind(Date.now() / 1000);
+
+// Force du coup de vent à l'instant t ; programme le suivant une fois
+// celui-ci retombé.
+function strongWindLevel(t) {
+  if (t > strongWindEnd + STRONG_WIND.rampDown) scheduleStrongWind(t);
+  const up = THREE.MathUtils.smoothstep(t, strongWindStart, strongWindStart + STRONG_WIND.rampUp);
+  const down = 1 - THREE.MathUtils.smoothstep(t, strongWindEnd, strongWindEnd + STRONG_WIND.rampDown);
+  return Math.min(up, down);
+}
+
+// Vent dans les arbres : calme, il va dans les deux sens (windAt) ; fort,
+// toujours du même côté (TREE_WIND.direction), entre TREE_WIND.lean
+// (accalmie) et 1 (rafale).
+function treeWindAt(t, strength) {
+  const calm = windAt(t);
+  const strong = TREE_WIND.direction * THREE.MathUtils.lerp(TREE_WIND.lean, 1, (calm + 1) / 2);
+  return THREE.MathUtils.lerp(calm, strong, strength);
+}
+
+// Son du vent : en boucle, volume = force du coup de vent, arrêté au calme.
+const windSound = new Audio(STRONG_WIND.soundFile);
+windSound.preload = "auto";
+windSound.loop = true;
+function updateWindSound(strength) {
+  if (strength < 0.01) {
+    if (!windSound.paused) windSound.pause();
+    return;
+  }
+  windSound.volume = THREE.MathUtils.clamp(strength, 0, 1) * STRONG_WIND.soundVolume;
+  // Chrome bloque le son sans clic, sauf ciel ouvert avec ciel_son.bat.
+  if (windSound.paused) windSound.play().catch(() => {});
+}
+
 // Balancement qui croît avec la hauteur dans l'arbre, et (pour les
-// feuilles) un frémissement rapide.
+// feuilles) des vagues de vent et un frémissement rapide.
 function addWind(material, flutter) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uWind = windUniform;
     shader.uniforms.uTime = timeUniform;
     shader.uniforms.uTreeHeight = treeHeightUniform;
+    shader.uniforms.uWindStrength = windStrengthUniform;
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
         `#include <common>
         uniform float uWind;
         uniform float uTime;
-        uniform float uTreeHeight;`
+        uniform float uTreeHeight;
+        uniform float uWindStrength;`
       )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>
         float hRel = clamp(position.y / uTreeHeight, 0.0, 1.0);
         float bend = hRel * hRel;
-        transformed.x += (uWind * 0.35 + sin(uTime * 0.9 + position.z * 0.2) * 0.06) * bend;
-        transformed.z += sin(uTime * 0.7 + position.x * 0.2) * 0.05 * bend;
+        // Calme : mouvement d'origine ; vent fort : réglages TREE_WIND.
+        float sway = mix(1.0, ${TREE_WIND.sway.toFixed(2)}, uWindStrength);
+        // Directions « droite » et « vers la caméra » de l'écran, ramenées
+        // dans le repère de l'arbre (chaque arbre est tourné différemment) :
+        // les deux arbres penchent du même côté.
+        mat3 toLocal = inverse(mat3(modelMatrix));
+        vec3 windX = normalize(toLocal * vec3(1.0, 0.0, 0.0));
+        vec3 windZ = normalize(toLocal * vec3(0.0, 0.0, 1.0));
+        transformed += windX * (uWind * 0.35 + sin(uTime * 0.9 + position.z * 0.2) * 0.06) * bend * sway;
+        transformed += windZ * sin(uTime * 0.7 + position.x * 0.2) * 0.05 * bend * sway;
         ${
           flutter
-            ? `float ph = dot(position, vec3(1.7, 2.3, 1.1));
-        transformed += vec3(sin(uTime * 3.1 + ph), sin(uTime * 2.3 + ph * 1.3), cos(uTime * 2.7 + ph)) * 0.025 * hRel;`
+            ? `// Rafale : plus le vent est fort (dans un sens ou l'autre), plus
+        // les feuilles s'agitent.
+        float gust = mix(1.0, 0.4 + 0.9 * abs(uWind), uWindStrength);
+        // Vagues qui parcourent le feuillage dans le sens du vent.
+        float wave = sin(uTime * 1.9 - position.x * 0.45 + position.y * 0.3)
+          + 0.5 * sin(uTime * 3.3 - position.x * 0.9 + position.z * 0.7);
+        float waves = ${TREE_WIND.gustWaves.toFixed(2)} * uWindStrength;
+        transformed += windX * wave * 0.09 * waves * gust * hRel;
+        transformed.y += wave * 0.035 * waves * gust * hRel;
+        float ph = dot(position, vec3(1.7, 2.3, 1.1));
+        transformed += vec3(sin(uTime * 3.1 + ph), sin(uTime * 2.3 + ph * 1.3), cos(uTime * 2.7 + ph))
+          * 0.025 * mix(1.0, ${TREE_WIND.flutter.toFixed(2)}, uWindStrength) * gust * hRel;`
             : ""
         }`
       );
@@ -942,7 +1040,10 @@ function animate() {
   const t = (Date.now() / 1000) % 3600;
   uniforms.uTime.value = t;
   timeUniform.value = t;
-  windUniform.value = windAt(t);
+  const windStrength = strongWindLevel(nowSeconds());
+  windStrengthUniform.value = windStrength;
+  windUniform.value = treeWindAt(t, windStrength);
+  if (SCREEN === "ciel") updateWindSound(windStrength);
   // Assombrissement : orage des clics nombreux, ou tempête automatique.
 const targetUmbrellaIntensity = umbrellaState;
 const transitionSpeed = 1 / UMBRELLA_TRANSITION_TIME;
