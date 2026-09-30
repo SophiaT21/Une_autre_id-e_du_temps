@@ -531,13 +531,52 @@ umbrellaEvents.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === "umbrella") {
+      const wasOpen = umbrellaState > 0;
       umbrellaState = data.state;
       console.log("☂️ ÉTAT PARAPLUIE →", umbrellaState);
+      if (SCREEN === "ciel") {
+        if (umbrellaState > 0 && !wasOpen) playStormSound();
+      }
     }
   } catch {
     // Ignore les messages qui ne sont pas du JSON valide.
   }
 };
+
+// --- Son de la tempête : joué quand le parapluie s'ouvre -------------------
+
+// Rejoué depuis le début à chaque ouverture du parapluie, en boucle. Son
+// volume suit la force de la tempête (umbrellaIntensity, voir
+// updateStormSound) : il monte avec elle, baisse quand le ciel s'éclaircit et
+// s'arrête quand la tempête est finie.
+const STORM_SOUND_FILE = "rain-on-an-umbrella.mp3";
+const STORM_SOUND_VOLUME = 1;
+const stormSound = new Audio(STORM_SOUND_FILE);
+stormSound.preload = "auto";
+stormSound.loop = true;
+
+function playStormSound() {
+  stormSound.currentTime = 0;
+  // Chrome bloque le son tant qu'on n'a pas cliqué sur la page (sauf lancé
+  // avec ciel_son.bat / lancer-ciel.command) : dans ce cas, il démarre au
+  // premier clic, si le parapluie est toujours ouvert.
+  stormSound.play().catch(() => {
+    window.addEventListener(
+      "pointerdown",
+      () => {
+        if (umbrellaState > 0) stormSound.play().catch(() => {});
+      },
+      { once: true }
+    );
+  });
+}
+
+// À chaque image : volume = force de la tempête ; arrêt quand elle est finie.
+function updateStormSound() {
+  if (stormSound.paused) return;
+  stormSound.volume = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1) * STORM_SOUND_VOLUME;
+  if (umbrellaState <= 0 && umbrellaIntensity < 0.01) stormSound.pause();
+}
 
 function nowSeconds() {
   return Date.now() / 1000;
@@ -886,6 +925,7 @@ umbrellaIntensity = THREE.MathUtils.lerp(
   SCREEN === "ciel" ? umbrellaIntensity * TEMPEST.darkness : 0
 );
   uniforms.uStorm.value = storm;
+  if (SCREEN === "ciel") updateStormSound();
   if (SCREEN === "ciel") sendStormToPuddles(storm, nowSeconds());
   // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
   const flash = SCREEN === "ciel" ? updateLightning(nowSeconds()) : 0;
