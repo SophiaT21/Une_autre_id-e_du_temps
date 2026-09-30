@@ -690,25 +690,33 @@ function playStormSound() {
 // tempête (parapluie) arrive, et baisse seulement (AMBIENT_UNDER_WIND)
 // pendant un coup de vent ; il revient quand ils retombent.
 const AMBIENT_SOUND_FILE = "ambiance.mp3";
-const AMBIENT_SOUND_VOLUME = 1;
+// 1 = volume du fichier ; au-delà, le son est amplifié (Web Audio).
+const AMBIENT_SOUND_VOLUME = 1.8;
 // Volume de l'ambiance au plus fort d'un coup de vent (part de
 // AMBIENT_SOUND_VOLUME).
 const AMBIENT_UNDER_WIND = 0.3;
 const ambientSound = new Audio(AMBIENT_SOUND_FILE);
 ambientSound.preload = "auto";
 ambientSound.loop = true;
+const ambientGain = stormAudioContext.createGain();
+ambientGain.gain.value = AMBIENT_SOUND_VOLUME;
+stormAudioContext.createMediaElementSource(ambientSound).connect(ambientGain).connect(stormAudioContext.destination);
 
 function updateAmbientSound(windStrength) {
   const storm = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1);
   const wind = THREE.MathUtils.lerp(1, AMBIENT_UNDER_WIND, windStrength);
-  const volume = (1 - storm) * wind * AMBIENT_SOUND_VOLUME;
+  // Le lecteur suit le fondu (0-1), l'amplificateur donne le volume.
+  const volume = (1 - storm) * wind;
   if (volume < 0.01) {
     if (!ambientSound.paused) ambientSound.pause();
     return;
   }
   ambientSound.volume = volume;
   // Chrome bloque le son sans clic, sauf ciel ouvert avec ciel_son.bat.
-  if (ambientSound.paused) ambientSound.play().catch(() => {});
+  if (ambientSound.paused) {
+    stormAudioContext.resume().catch(() => {});
+    ambientSound.play().catch(() => {});
+  }
 }
 
 // À chaque image : volume = force de la tempête ; arrêt quand elle est finie.
@@ -954,12 +962,24 @@ function lightningEnvelope(dt) {
   return Math.min(1, pulse(0.03, 0.045) + 0.65 * pulse(0.17, 0.05) + 0.45 * pulse(0.34, 0.08) + 0.2 * Math.exp(-dt * 4));
 }
 
+// Chaque éclair est annoncé par son tonnerre exactement THUNDER_LEAD s
+// avant : le tonnerre lance le compte à rebours, et l'éclair ne part que si
+// son tonnerre a été lancé. Une fois le tonnerre parti, l'éclair a lieu
+// même si la tempête retombe entre-temps (jamais de tonnerre sans éclair).
 function updateLightning(now) {
   const level = tempestLevel(now);
-  if (level < LIGHTNING.minTempest) {
-    // Premier éclair peu après que la tempête est bien installée, assez
-    // tard pour que son tonnerre parte THUNDER_LEAD s avant.
-    nextLightning = now + THUNDER_LEAD + THREE.MathUtils.randFloat(0.5, 2);
+  const thunderLaunched = thunderPlayedFor === nextLightning;
+  if (!thunderLaunched) {
+    if (level < LIGHTNING.minTempest) {
+      // Premier éclair peu après que la tempête est bien installée.
+      nextLightning = now + THUNDER_LEAD + THREE.MathUtils.randFloat(0.5, 2);
+    } else if (now >= nextLightning - THUNDER_LEAD) {
+      // Heure du tonnerre : l'éclair aura lieu THUNDER_LEAD s plus tard
+      // (repoussé si besoin, pour ne jamais le raccourcir).
+      nextLightning = Math.max(nextLightning, now + THUNDER_LEAD);
+      thunderPlayedFor = nextLightning;
+      playThunderSound();
+    }
   } else if (now >= nextLightning) {
     lightningStart = now;
     nextLightning = now + THREE.MathUtils.randFloat(LIGHTNING.minInterval, LIGHTNING.maxInterval);
@@ -971,11 +991,6 @@ function updateLightning(now) {
     // La flaque reflète la lumière de l'éclair, au même moment et au même
     // rythme (voir main.js).
     sendLightningToPuddles();
-  }
-  // Tonnerre THUNDER_LEAD s avant l'éclair prévu (une fois par éclair).
-  if (level >= LIGHTNING.minTempest && now >= nextLightning - THUNDER_LEAD && thunderPlayedFor !== nextLightning) {
-    thunderPlayedFor = nextLightning;
-    playThunderSound();
   }
   const e = lightningEnvelope(now - lightningStart);
   uniforms.uFlash.value = e * LIGHTNING.flash;

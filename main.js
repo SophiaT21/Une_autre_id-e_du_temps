@@ -163,7 +163,7 @@ function receiveDrop({ x, y, delay, storm = 0 }) {
   const local = toLocal(big);
   water.addRipple(local, sharedTime() + delay, storm);
   // Bruit de la goutte au moment où elle touche l'eau.
-  if (isOnScreen(local)) setTimeout(playDropSound, Math.max(0, delay) * 1000);
+  if (isOnScreen(local)) setTimeout(() => playDropSound(storm), Math.max(0, delay) * 1000);
 }
 
 // --- Son des gouttes qui tombent dans l'eau ---------------------------------
@@ -173,8 +173,8 @@ function receiveDrop({ x, y, delay, storm = 0 }) {
 const DROP_SOUND_FILES = ["Goutte1.mp3", "Goutte2.mp3", "Goutte3.mp3"];
 // Chaque goutte a sa propre intensité, tirée au hasard entre ces deux
 // volumes (0-1) : gouttes plus ou moins fortes, plus ou moins proches.
-const DROP_SOUND_MIN_VOLUME = 0.12;
-const DROP_SOUND_MAX_VOLUME = 0.5;
+const DROP_SOUND_MIN_VOLUME = 0.04;
+const DROP_SOUND_MAX_VOLUME = 0.18;
 // Nombre maximum de sons de goutte en même temps sur un écran (pendant la
 // tempête, les gouttes suivantes restent muettes).
 const MAX_DROP_SOUNDS = 8;
@@ -190,20 +190,19 @@ function isOnScreen(local) {
   return Math.abs(local.x) <= camera.right && Math.abs(local.y) <= camera.top;
 }
 
-// Pendant la tempête (ciel assombri, voir skyStorm), les gouttes se taisent :
-// leur volume baisse dès que le ciel commence à s'assombrir et devient nul
-// quand l'orage est installé.
-const DROP_SOUND_STORM_MUTE = 0.25;
+// Aucun bruit de goutte dès que le ciel commence à s'assombrir, pendant la
+// tempête et tant qu'il ne s'est pas complètement éclairci (skyStorm), ni
+// pour une goutte partie pendant une tempête (storm).
+const DROP_SOUND_STORM_THRESHOLD = 0.003;
 
-function playDropSound() {
+function playDropSound(storm = 0) {
   if (playingDropSounds >= MAX_DROP_SOUNDS) return;
-  const stormMute = 1 - THREE.MathUtils.smoothstep(skyStorm, 0.02, DROP_SOUND_STORM_MUTE);
-  if (stormMute <= 0) return;
+  if (skyStorm > DROP_SOUND_STORM_THRESHOLD || storm > DROP_SOUND_STORM_THRESHOLD) return;
   let i = Math.floor(Math.random() * dropSounds.length);
   if (i === lastDropSound && dropSounds.length > 1) i = (i + 1) % dropSounds.length;
   lastDropSound = i;
   const sound = dropSounds[i].cloneNode();
-  sound.volume = THREE.MathUtils.randFloat(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME) * stormMute;
+  sound.volume = THREE.MathUtils.randFloat(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME);
   playingDropSounds++;
   const done = () => {
     playingDropSounds--;
