@@ -669,6 +669,33 @@ function playStormSound() {
   });
 }
 
+// --- Son d'ambiance : quand il n'y a ni tempête ni coup de vent ------------
+
+// En boucle, en fondu enchaîné avec les autres sons : il s'efface quand la
+// tempête (parapluie) arrive, et baisse seulement (AMBIENT_UNDER_WIND)
+// pendant un coup de vent ; il revient quand ils retombent.
+const AMBIENT_SOUND_FILE = "ambiance.mp3";
+const AMBIENT_SOUND_VOLUME = 1;
+// Volume de l'ambiance au plus fort d'un coup de vent (part de
+// AMBIENT_SOUND_VOLUME).
+const AMBIENT_UNDER_WIND = 0.3;
+const ambientSound = new Audio(AMBIENT_SOUND_FILE);
+ambientSound.preload = "auto";
+ambientSound.loop = true;
+
+function updateAmbientSound(windStrength) {
+  const storm = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1);
+  const wind = THREE.MathUtils.lerp(1, AMBIENT_UNDER_WIND, windStrength);
+  const volume = (1 - storm) * wind * AMBIENT_SOUND_VOLUME;
+  if (volume < 0.01) {
+    if (!ambientSound.paused) ambientSound.pause();
+    return;
+  }
+  ambientSound.volume = volume;
+  // Chrome bloque le son sans clic, sauf ciel ouvert avec ciel_son.bat.
+  if (ambientSound.paused) ambientSound.play().catch(() => {});
+}
+
 // À chaque image : volume = force de la tempête ; arrêt quand elle est finie.
 function updateStormSound() {
   if (stormSound.paused) return;
@@ -1057,7 +1084,10 @@ umbrellaIntensity = THREE.MathUtils.lerp(
   SCREEN === "ciel" ? umbrellaIntensity * TEMPEST.darkness : 0
 );
   uniforms.uStorm.value = storm;
-  if (SCREEN === "ciel") updateStormSound();
+  if (SCREEN === "ciel") {
+    updateStormSound();
+    updateAmbientSound(windStrength);
+  }
   if (SCREEN === "ciel") sendStormToPuddles(storm, nowSeconds());
   // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
   const flash = SCREEN === "ciel" ? updateLightning(nowSeconds()) : 0;
