@@ -190,13 +190,20 @@ function isOnScreen(local) {
   return Math.abs(local.x) <= camera.right && Math.abs(local.y) <= camera.top;
 }
 
+// Pendant la tempête (ciel assombri, voir skyStorm), les gouttes se taisent :
+// leur volume baisse dès que le ciel commence à s'assombrir et devient nul
+// quand l'orage est installé.
+const DROP_SOUND_STORM_MUTE = 0.25;
+
 function playDropSound() {
   if (playingDropSounds >= MAX_DROP_SOUNDS) return;
+  const stormMute = 1 - THREE.MathUtils.smoothstep(skyStorm, 0.02, DROP_SOUND_STORM_MUTE);
+  if (stormMute <= 0) return;
   let i = Math.floor(Math.random() * dropSounds.length);
   if (i === lastDropSound && dropSounds.length > 1) i = (i + 1) % dropSounds.length;
   lastDropSound = i;
   const sound = dropSounds[i].cloneNode();
-  sound.volume = THREE.MathUtils.randFloat(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME);
+  sound.volume = THREE.MathUtils.randFloat(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME) * stormMute;
   playingDropSounds++;
   const done = () => {
     playingDropSounds--;
