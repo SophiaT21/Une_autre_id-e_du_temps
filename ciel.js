@@ -643,26 +643,41 @@ umbrellaEvents.onmessage = (event) => {
 
 // --- Son de la tempête : joué quand le parapluie s'ouvre -------------------
 
-// Rejoué depuis le début à chaque ouverture du parapluie, en boucle. Son
-// volume suit la force de la tempête (umbrellaIntensity, voir
-// updateStormSound) : il monte avec elle, baisse quand le ciel s'éclaircit et
-// s'arrête quand la tempête est finie.
-const STORM_SOUND_FILE = "rain-on-an-umbrella.mp3";
-const STORM_SOUND_VOLUME = 1;
-const stormSound = new Audio(STORM_SOUND_FILE);
-stormSound.preload = "auto";
-stormSound.loop = true;
+// Pluie sur le parapluie + pluie (plus bas, en dessous), lancées ensemble
+// depuis le début à chaque ouverture du parapluie, en boucle. Leur volume
+// suit la force de la tempête (umbrellaIntensity, voir updateStormSound) :
+// il monte avec elle, baisse quand le ciel s'éclaircit, et les deux
+// s'arrêtent ensemble quand la tempête est finie.
+// volume : 1 = volume du fichier ; au-delà, le son est amplifié (Web Audio).
+const STORM_SOUNDS = [
+  { file: "rain-on-an-umbrella.mp3", volume: 1.8 },
+  { file: "pluie.mp3", volume: 0.25 },
+];
+// Amplificateur : le volume d'un lecteur audio ne dépasse pas 1, un
+// « gain » Web Audio si.
+const stormAudioContext = new AudioContext();
+const stormSounds = STORM_SOUNDS.map(({ file, volume }) => {
+  const audio = new Audio(file);
+  audio.preload = "auto";
+  audio.loop = true;
+  const gain = stormAudioContext.createGain();
+  gain.gain.value = volume;
+  stormAudioContext.createMediaElementSource(audio).connect(gain).connect(stormAudioContext.destination);
+  return { audio };
+});
 
 function playStormSound() {
-  stormSound.currentTime = 0;
+  stormAudioContext.resume().catch(() => {});
+  for (const { audio } of stormSounds) audio.currentTime = 0;
   // Chrome bloque le son tant qu'on n'a pas cliqué sur la page (sauf lancé
   // avec ciel_son.bat / lancer-ciel.command) : dans ce cas, il démarre au
   // premier clic, si le parapluie est toujours ouvert.
-  stormSound.play().catch(() => {
+  Promise.all(stormSounds.map(({ audio }) => audio.play())).catch(() => {
     window.addEventListener(
       "pointerdown",
       () => {
-        if (umbrellaState > 0) stormSound.play().catch(() => {});
+        stormAudioContext.resume().catch(() => {});
+        if (umbrellaState > 0) for (const { audio } of stormSounds) audio.play().catch(() => {});
       },
       { once: true }
     );
@@ -698,9 +713,14 @@ function updateAmbientSound(windStrength) {
 
 // À chaque image : volume = force de la tempête ; arrêt quand elle est finie.
 function updateStormSound() {
-  if (stormSound.paused) return;
-  stormSound.volume = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1) * STORM_SOUND_VOLUME;
-  if (umbrellaState <= 0 && umbrellaIntensity < 0.01) stormSound.pause();
+  const level = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1);
+  const finished = umbrellaState <= 0 && umbrellaIntensity < 0.01;
+  for (const { audio } of stormSounds) {
+    if (audio.paused) continue;
+    // Le lecteur suit la tempête (0-1), l'amplificateur donne le volume.
+    audio.volume = level;
+    if (finished) audio.pause();
+  }
 }
 
 function nowSeconds() {
