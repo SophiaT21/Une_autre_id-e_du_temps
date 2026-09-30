@@ -882,15 +882,9 @@ umbrellaIntensity = THREE.MathUtils.lerp(
   Math.min(1, transitionSpeed / 60)
 );
   const storm = Math.max(
-<<<<<<< HEAD
-    stormLevel(nowSeconds()) * STORM_MAX,
-    SCREEN === "ciel" ? umbrellaLevel() * TEMPEST.darkness : 0
-  );
-=======
   stormLevel(nowSeconds()) * STORM_MAX,
   SCREEN === "ciel" ? umbrellaIntensity * TEMPEST.darkness : 0
 );
->>>>>>> a7b53d9 (Amelioration transition tempete)
   uniforms.uStorm.value = storm;
   if (SCREEN === "ciel") sendStormToPuddles(storm, nowSeconds());
   // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
