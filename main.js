@@ -160,7 +160,52 @@ function receiveDrop({ x, y, delay, storm = 0 }) {
   const hw = camera.right;
   const hh = camera.top;
   const big = new THREE.Vector2(-hw + y * 2 * hw, -hh + x * 4 * hh);
-  water.addRipple(toLocal(big), sharedTime() + delay, storm);
+  const local = toLocal(big);
+  water.addRipple(local, sharedTime() + delay, storm);
+  // Bruit de la goutte au moment où elle touche l'eau.
+  if (isOnScreen(local)) setTimeout(playDropSound, Math.max(0, delay) * 1000);
+}
+
+// --- Son des gouttes qui tombent dans l'eau ---------------------------------
+
+// Un des trois sons, au hasard (jamais deux fois le même de suite), joué par
+// l'écran où tombe la goutte seulement (pas de doublon entre les flaques).
+const DROP_SOUND_FILES = ["Goutte1.mp3", "Goutte2.mp3", "Goutte3.mp3"];
+// Chaque goutte a sa propre intensité, tirée au hasard entre ces deux
+// volumes (0-1) : gouttes plus ou moins fortes, plus ou moins proches.
+const DROP_SOUND_MIN_VOLUME = 0.25;
+const DROP_SOUND_MAX_VOLUME = 1;
+// Nombre maximum de sons de goutte en même temps sur un écran (pendant la
+// tempête, les gouttes suivantes restent muettes).
+const MAX_DROP_SOUNDS = 8;
+const dropSounds = DROP_SOUND_FILES.map((file) => {
+  const sound = new Audio(file);
+  sound.preload = "auto";
+  return sound;
+});
+let lastDropSound = -1;
+let playingDropSounds = 0;
+
+function isOnScreen(local) {
+  return Math.abs(local.x) <= camera.right && Math.abs(local.y) <= camera.top;
+}
+
+function playDropSound() {
+  if (playingDropSounds >= MAX_DROP_SOUNDS) return;
+  let i = Math.floor(Math.random() * dropSounds.length);
+  if (i === lastDropSound && dropSounds.length > 1) i = (i + 1) % dropSounds.length;
+  lastDropSound = i;
+  const sound = dropSounds[i].cloneNode();
+  sound.volume = THREE.MathUtils.randFloat(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME);
+  playingDropSounds++;
+  const done = () => {
+    playingDropSounds--;
+    sound.onended = sound.onerror = null;
+  };
+  sound.onended = done;
+  sound.onerror = done;
+  // Chrome bloque le son sans clic, sauf flaque ouverte avec flaque1_son.bat ou flaque2_son.bat.
+  sound.play().catch(done);
 }
 
 // --- Lumière des éclairs de l'écran ciel, reflétée par l'eau --------------
@@ -272,6 +317,7 @@ function onPointerDown(event) {
   if (hits.length > 0) {
     const local = water.mesh.worldToLocal(hits[0].point.clone());
     water.addRipple(local);
+    playDropSound();
     // Position par rapport au bord commun, et heure du clic.
     const big = toBig(local);
     sendRipple({ bx: big.x, by: big.y, t: sharedTime() });
