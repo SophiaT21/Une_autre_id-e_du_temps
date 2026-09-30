@@ -768,13 +768,38 @@ const LIGHTNING = {
   // La tempête doit être au moins à ce niveau pour qu'il y ait des éclairs.
   minTempest: 0.5,
   // Intervalle entre deux éclairs, tiré au hasard (s).
-  minInterval: 3,
-  maxInterval: 9,
+  minInterval: 8,
+  maxInterval: 16,
   // Force de l'illumination des nuages (0-1).
   flash: 0.9,
 };
 let lightningStart = -Infinity;
 let nextLightning = 0;
+
+// Son de la foudre : part THUNDER_LEAD s avant chaque éclair, tiré au
+// hasard parmi THUNDER_SOUND_FILES (jamais deux fois le même de suite). Une
+// copie du son par éclair, pour que deux coups de tonnerre proches se
+// superposent.
+const THUNDER_SOUND_FILES = ["foudre.mp3", "foudre2.mp3", "foudre3.mp3"];
+const THUNDER_SOUND_VOLUME = 1;
+const THUNDER_LEAD = 4;
+const thunderSounds = THUNDER_SOUND_FILES.map((file) => {
+  const sound = new Audio(file);
+  sound.preload = "auto";
+  return sound;
+});
+let lastThunder = -1;
+// Éclair (heure prévue) dont le tonnerre a déjà été lancé.
+let thunderPlayedFor = -1;
+
+function playThunderSound() {
+  let i = Math.floor(Math.random() * thunderSounds.length);
+  if (i === lastThunder && thunderSounds.length > 1) i = (i + 1) % thunderSounds.length;
+  lastThunder = i;
+  const sound = thunderSounds[i].cloneNode();
+  sound.volume = THUNDER_SOUND_VOLUME;
+  sound.play().catch(() => {});
+}
 
 // Intensité de l'éclair dt secondes après son début : deux ou trois
 // scintillements rapides puis une lueur qui s'éteint.
@@ -787,8 +812,9 @@ function lightningEnvelope(dt) {
 function updateLightning(now) {
   const level = tempestLevel(now);
   if (level < LIGHTNING.minTempest) {
-    // Premier éclair peu après que la tempête est bien installée.
-    nextLightning = now + THREE.MathUtils.randFloat(1, 3);
+    // Premier éclair peu après que la tempête est bien installée, assez
+    // tard pour que son tonnerre parte THUNDER_LEAD s avant.
+    nextLightning = now + THUNDER_LEAD + THREE.MathUtils.randFloat(0.5, 2);
   } else if (now >= nextLightning) {
     lightningStart = now;
     nextLightning = now + THREE.MathUtils.randFloat(LIGHTNING.minInterval, LIGHTNING.maxInterval);
@@ -800,6 +826,11 @@ function updateLightning(now) {
     // La flaque reflète la lumière de l'éclair, au même moment et au même
     // rythme (voir main.js).
     sendLightningToPuddles();
+  }
+  // Tonnerre THUNDER_LEAD s avant l'éclair prévu (une fois par éclair).
+  if (level >= LIGHTNING.minTempest && now >= nextLightning - THUNDER_LEAD && thunderPlayedFor !== nextLightning) {
+    thunderPlayedFor = nextLightning;
+    playThunderSound();
   }
   const e = lightningEnvelope(now - lightningStart);
   uniforms.uFlash.value = e * LIGHTNING.flash;
