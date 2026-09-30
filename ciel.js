@@ -505,6 +505,23 @@ const hit = new THREE.Vector3();
 // par le haut de « arbres » exactement au même moment.
 const channel = new BroadcastChannel("une-autre-idee-du-temps");
 
+let umbrellaState = 0;
+
+const umbrellaEvents = new EventSource("/evenements");
+
+umbrellaEvents.onmessage = (event) => {
+  try {
+    const data = JSON.parse(event.data);
+
+    if (data.type === "umbrella") {
+      umbrellaState = data.state;
+      console.log("☂️ ÉTAT PARAPLUIE →", umbrellaState);
+    }
+  } catch {
+    // Ignore les messages qui ne sont pas du JSON valide.
+  }
+};
+
 function nowSeconds() {
   return Date.now() / 1000;
 }
@@ -568,7 +585,7 @@ function launchDrop(clientX, clientY, auto) {
   // Accélération telle que la goutte traverse l'écran « ciel » en
   // DROP_FALL_TIME ; ensuite elle garde cette vitesse (vitesse limite).
   // Tempête : la goutte devient un trait (voir updateDrops) et tombe plus vite.
-  const streak = auto && SCREEN === "ciel" ? tempestLevel(nowSeconds()) : 0;
+ const streak = auto && SCREEN === "ciel" ? umbrellaState : 0;
   const fallTime = DROP_FALL_TIME * (1 - STREAK_SPEEDUP * streak);
   const gravity = (2 * screenHeight * (1 + DROP_SIZE * 2)) / (fallTime * fallTime);
   const params = {
@@ -742,7 +759,11 @@ const RAIN_TICK = 0.05;
 function startAutoRain() {
   setInterval(() => {
     // Gouttes par seconde : pluie légère → très forte pendant une tempête.
-    const rate = THREE.MathUtils.lerp(1 / LIGHT_RAIN_INTERVAL, TEMPEST.heavyRate, tempestLevel(nowSeconds()));
+    const rate = THREE.MathUtils.lerp(
+  1 / LIGHT_RAIN_INTERVAL,
+  TEMPEST.heavyRate,
+  umbrellaState
+);
     // Nombre de gouttes pour ce pas de temps, au hasard autour de la moyenne.
     const expected = rate * RAIN_TICK;
     const count = Math.floor(expected) + (Math.random() < expected % 1 ? 1 : 0);
@@ -824,9 +845,9 @@ function animate() {
   windUniform.value = windAt(t);
   // Assombrissement : orage des clics nombreux, ou tempête automatique.
   const storm = Math.max(
-    stormLevel(nowSeconds()) * STORM_MAX,
-    SCREEN === "ciel" ? tempestLevel(nowSeconds()) * TEMPEST.darkness : 0
-  );
+  stormLevel(nowSeconds()) * STORM_MAX,
+  SCREEN === "ciel" ? umbrellaState * TEMPEST.darkness : 0
+);
   uniforms.uStorm.value = storm;
   // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
   const flash = SCREEN === "ciel" ? updateLightning(nowSeconds()) : 0;

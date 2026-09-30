@@ -65,19 +65,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
-        if self.path != "/onde":
-            self.send_error(404)
-            return
         length = int(self.headers.get("Content-Length", 0))
         data = self.rfile.read(length).decode()
+
         try:
-            json.loads(data)
+            message = json.loads(data)
         except ValueError:
             self.send_error(400)
             return
-        broadcast(data)
-        self.send_response(204)
-        self.end_headers()
+
+        # Goutte / onde existante
+        if self.path == "/onde":
+            broadcast(data)
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        # État du parapluie
+        if self.path == "/umbrella":
+            state = int(message.get("state", 0))
+
+            umbrella_message = json.dumps({
+                "type": "umbrella",
+                "state": state
+            })
+
+            broadcast(umbrella_message)
+
+            self.send_response(204)
+            self.end_headers()
+            return
+
+        self.send_error(404)
 
     def stream_events(self):
         """Flux « server-sent events » : les ondes arrivent au fil de l'eau."""
