@@ -1,6 +1,6 @@
 @echo off
-rem Ouvre l'ecran du ciel dans Chrome, en plein ecran, avec le son autorise
-rem sans clic (le son de la tempete part tout seul quand le parapluie s'ouvre).
+rem Ouvre l'ecran du ciel dans Chrome, en plein ecran (muet : les sons sont
+rem joues par l'ordinateur emetteur, voir serveur.py).
 rem
 rem ADRESSE : adresse du PC qui lance serveur.py (celle qu'il affiche au
 rem demarrage), ou localhost si c'est ce PC-ci.

@@ -1,6 +1,6 @@
 @echo off
-rem Ouvre la flaque 2 dans Chrome, en plein ecran, avec le son autorise
-rem sans clic (bruit des gouttes qui tombent dans l'eau).
+rem Ouvre la flaque 2 dans Chrome, en plein ecran (muette : les sons sont
+rem joues par l'ordinateur emetteur, voir serveur.py).
 rem
 rem ADRESSE : adresse du PC qui lance serveur.py (celle qu'il affiche au
 rem demarrage), ou localhost si c'est ce PC-ci.

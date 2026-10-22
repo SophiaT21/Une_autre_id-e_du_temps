@@ -1,7 +1,7 @@
 #!/bin/sh
-# Ouvre l'écran du ciel dans Chrome (Mac), en plein écran, avec le son
-# autorisé sans clic (le son de la tempête part tout seul quand le parapluie
-# s'ouvre). Double-clic pour lancer ; Cmd+Q pour fermer.
+# Ouvre l'écran du ciel dans Chrome (Mac), en plein écran (muet : les sons
+# sont joués par l'ordinateur émetteur, voir serveur.py).
+# Double-clic pour lancer ; Cmd+Q pour fermer.
 #
 # ADRESSE : adresse du poste qui lance serveur.py, ou localhost si c'est
 # ce Mac.

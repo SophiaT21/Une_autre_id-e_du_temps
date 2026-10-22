@@ -7,13 +7,16 @@
   /evenements), quelles que soient la fenêtre, le navigateur ou l'ordinateur.
 - Donne l'heure de référence (GET /temps) pour que tous les écrans, même sur
   des ordinateurs différents, partagent exactement le même temps.
+- Joue tous les sons de l'installation sur cet ordinateur (voir sons.py) :
+  les écrans sont muets.
 
 Lancement (depuis le dossier du projet) :
     python3 serveur.py
 puis ouvrir http://localhost:8000/flaque.html et http://localhost:8000/flaque2.html
 (depuis un autre ordinateur du même réseau : l'adresse affichée au lancement).
 
-Uniquement la bibliothèque standard de Python : rien à installer.
+Pour les sons, installer pygame une fois (voir sons.py) ; sans lui, tout
+marche sauf le son.
 """
 
 import http.server
@@ -24,6 +27,8 @@ import threading
 import time
 from pathlib import Path
 
+import sons
+
 PORT = 8000
 ROOT = Path(__file__).resolve().parent
 
@@ -33,6 +38,7 @@ clients_lock = threading.Lock()
 
 
 def broadcast(message):
+    sons.send(message)
     with clients_lock:
         for q in list(clients):
             q.put(message)
@@ -155,6 +161,7 @@ if __name__ == "__main__":
     print("Serveur de l'installation lancé.")
     print(f"  Sur cet ordinateur    : http://localhost:{PORT}/flaque.html  et  /flaque2.html")
     print(f"  Depuis un autre poste : http://{local_ip()}:{PORT}/flaque.html  et  /flaque2.html")
+    sons.start()
     print("Ctrl+C pour arrêter.", flush=True)
     try:
         server.serve_forever()

@@ -202,7 +202,7 @@ const treeHeightUniform = { value: 16 };
 // Vent dans les arbres : la plupart du temps calme (mouvement d'origine,
 // discret, dans les deux sens), et de temps en temps, au hasard, un coup de
 // vent fort qui pousse les feuillages vers la droite (réglages ci-dessous,
-// 1 = mouvement d'origine), avec le son vent.mp3.
+// 1 = mouvement d'origine), avec le son vent.mp3 (joué par le serveur, voir sons.py).
 const TREE_WIND = {
   // Sens du vent : 1 = vers la droite, -1 = vers la gauche.
   direction: 1,
@@ -229,9 +229,6 @@ const STRONG_WIND = {
   // Temps pour que le vent se lève / retombe (s).
   rampUp: 3,
   rampDown: 6,
-  // Son du vent fort (volume au plus fort du vent, 0-1).
-  soundFile: "vent.mp3",
-  soundVolume: 1,
 };
 
 // Force du coup de vent (0 = calme, 1 = vent fort), partagée avec le shader.
@@ -261,20 +258,6 @@ function treeWindAt(t, strength) {
   const calm = windAt(t);
   const strong = TREE_WIND.direction * THREE.MathUtils.lerp(TREE_WIND.lean, 1, (calm + 1) / 2);
   return THREE.MathUtils.lerp(calm, strong, strength);
-}
-
-// Son du vent : en boucle, volume = force du coup de vent, arrêté au calme.
-const windSound = new Audio(STRONG_WIND.soundFile);
-windSound.preload = "auto";
-windSound.loop = true;
-function updateWindSound(strength) {
-  if (strength < 0.01) {
-    if (!windSound.paused) windSound.pause();
-    return;
-  }
-  windSound.volume = THREE.MathUtils.clamp(strength, 0, 1) * STRONG_WIND.soundVolume;
-  // Chrome bloque le son sans clic, sauf ciel ouvert avec ciel_son.bat.
-  if (windSound.paused) windSound.play().catch(() => {});
 }
 
 // Balancement qui croît avec la hauteur dans l'arbre, et (pour les
@@ -510,23 +493,27 @@ function sendDropToPuddles(u, delay, storm = 0) {
 }
 const puddleChannel = new BroadcastChannel("eau-interferences");
 
-// Envoie aux flaques l'assombrissement du ciel (uStorm), quelques fois par
-// seconde quand il change, et de temps en temps sinon (flaque ouverte après
-// le ciel).
-let sentStorm = -1;
+// Envoie aux flaques l'assombrissement du ciel (uStorm), et à la page des
+// sons (serveur.py, voir sons.py) la force de la tempête du parapluie et du coup de vent,
+// quelques fois par seconde quand ils changent, et de temps en temps sinon
+// (page ouverte après le ciel).
+let sent = { storm: -1, umbrella: -1, wind: -1 };
 let lastStormSent = 0;
-function sendStormToPuddles(storm, now) {
-  const changed = Math.abs(storm - sentStorm) > 0.005;
+function sendStormToPuddles(storm, umbrella, wind, now) {
+  const changed = ["storm", "umbrella", "wind"].some(
+    (key) => Math.abs({ storm, umbrella, wind }[key] - sent[key]) > 0.005
+  );
   if (now - lastStormSent < (changed ? 0.2 : 2)) return;
-  sentStorm = storm;
+  sent = { storm, umbrella, wind };
   lastStormSent = now;
-  const message = { type: "ciel", storm };
+  const message = { type: "ciel", storm, umbrella, wind };
   fetch("/onde", { method: "POST", body: JSON.stringify(message) }).catch(() => {});
   puddleChannel.postMessage(message);
 }
 
 // Annonce un éclair aux flaques, avec sa force (même valeur que le flash
 // du ciel) : elles rejouent la même courbe de lumière (lightningEnvelope).
+// Le serveur en tire le tonnerre (voir sons.py).
 function sendLightningToPuddles() {
   const message = { type: "eclair", flash: LIGHTNING.flash };
   fetch("/onde", { method: "POST", body: JSON.stringify(message) }).catch(() => {});
@@ -629,107 +616,13 @@ umbrellaEvents.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === "umbrella") {
-      const wasOpen = umbrellaState > 0;
       umbrellaState = data.state;
       console.log("☂️ ÉTAT PARAPLUIE →", umbrellaState);
-      if (SCREEN === "ciel") {
-        if (umbrellaState > 0 && !wasOpen) playStormSound();
-      }
     }
   } catch {
     // Ignore les messages qui ne sont pas du JSON valide.
   }
 };
-
-// --- Son de la tempête : joué quand le parapluie s'ouvre -------------------
-
-// Pluie sur le parapluie + pluie (plus bas, en dessous), lancées ensemble
-// depuis le début à chaque ouverture du parapluie, en boucle. Leur volume
-// suit la force de la tempête (umbrellaIntensity, voir updateStormSound) :
-// il monte avec elle, baisse quand le ciel s'éclaircit, et les deux
-// s'arrêtent ensemble quand la tempête est finie.
-// volume : 1 = volume du fichier ; au-delà, le son est amplifié (Web Audio).
-const STORM_SOUNDS = [
-  { file: "rain-on-an-umbrella.mp3", volume: 1.8 },
-  { file: "pluie.mp3", volume: 0.25 },
-];
-// Amplificateur : le volume d'un lecteur audio ne dépasse pas 1, un
-// « gain » Web Audio si.
-const stormAudioContext = new AudioContext();
-const stormSounds = STORM_SOUNDS.map(({ file, volume }) => {
-  const audio = new Audio(file);
-  audio.preload = "auto";
-  audio.loop = true;
-  const gain = stormAudioContext.createGain();
-  gain.gain.value = volume;
-  stormAudioContext.createMediaElementSource(audio).connect(gain).connect(stormAudioContext.destination);
-  return { audio };
-});
-
-function playStormSound() {
-  stormAudioContext.resume().catch(() => {});
-  for (const { audio } of stormSounds) audio.currentTime = 0;
-  // Chrome bloque le son tant qu'on n'a pas cliqué sur la page (sauf lancé
-  // avec ciel_son.bat / lancer-ciel.command) : dans ce cas, il démarre au
-  // premier clic, si le parapluie est toujours ouvert.
-  Promise.all(stormSounds.map(({ audio }) => audio.play())).catch(() => {
-    window.addEventListener(
-      "pointerdown",
-      () => {
-        stormAudioContext.resume().catch(() => {});
-        if (umbrellaState > 0) for (const { audio } of stormSounds) audio.play().catch(() => {});
-      },
-      { once: true }
-    );
-  });
-}
-
-// --- Son d'ambiance : quand il n'y a ni tempête ni coup de vent ------------
-
-// En boucle, en fondu enchaîné avec les autres sons : il s'efface quand la
-// tempête (parapluie) arrive, et baisse seulement (AMBIENT_UNDER_WIND)
-// pendant un coup de vent ; il revient quand ils retombent.
-const AMBIENT_SOUND_FILE = "ambiance.mp3";
-// 1 = volume du fichier ; au-delà, le son est amplifié (Web Audio).
-const AMBIENT_SOUND_VOLUME = 1.8;
-// Volume de l'ambiance au plus fort d'un coup de vent (part de
-// AMBIENT_SOUND_VOLUME).
-const AMBIENT_UNDER_WIND = 0.3;
-const ambientSound = new Audio(AMBIENT_SOUND_FILE);
-ambientSound.preload = "auto";
-ambientSound.loop = true;
-const ambientGain = stormAudioContext.createGain();
-ambientGain.gain.value = AMBIENT_SOUND_VOLUME;
-stormAudioContext.createMediaElementSource(ambientSound).connect(ambientGain).connect(stormAudioContext.destination);
-
-function updateAmbientSound(windStrength) {
-  const storm = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1);
-  const wind = THREE.MathUtils.lerp(1, AMBIENT_UNDER_WIND, windStrength);
-  // Le lecteur suit le fondu (0-1), l'amplificateur donne le volume.
-  const volume = (1 - storm) * wind;
-  if (volume < 0.01) {
-    if (!ambientSound.paused) ambientSound.pause();
-    return;
-  }
-  ambientSound.volume = volume;
-  // Chrome bloque le son sans clic, sauf ciel ouvert avec ciel_son.bat.
-  if (ambientSound.paused) {
-    stormAudioContext.resume().catch(() => {});
-    ambientSound.play().catch(() => {});
-  }
-}
-
-// À chaque image : volume = force de la tempête ; arrêt quand elle est finie.
-function updateStormSound() {
-  const level = THREE.MathUtils.clamp(umbrellaIntensity, 0, 1);
-  const finished = umbrellaState <= 0 && umbrellaIntensity < 0.01;
-  for (const { audio } of stormSounds) {
-    if (audio.paused) continue;
-    // Le lecteur suit la tempête (0-1), l'amplificateur donne le volume.
-    audio.volume = level;
-    if (finished) audio.pause();
-  }
-}
 
 function nowSeconds() {
   return Date.now() / 1000;
@@ -929,31 +822,6 @@ const LIGHTNING = {
 let lightningStart = -Infinity;
 let nextLightning = 0;
 
-// Son de la foudre : part THUNDER_LEAD s avant chaque éclair, tiré au
-// hasard parmi THUNDER_SOUND_FILES (jamais deux fois le même de suite). Une
-// copie du son par éclair, pour que deux coups de tonnerre proches se
-// superposent.
-const THUNDER_SOUND_FILES = ["foudre.mp3", "foudre2.mp3", "foudre3.mp3"];
-const THUNDER_SOUND_VOLUME = 1;
-const THUNDER_LEAD = 4;
-const thunderSounds = THUNDER_SOUND_FILES.map((file) => {
-  const sound = new Audio(file);
-  sound.preload = "auto";
-  return sound;
-});
-let lastThunder = -1;
-// Éclair (heure prévue) dont le tonnerre a déjà été lancé.
-let thunderPlayedFor = -1;
-
-function playThunderSound() {
-  let i = Math.floor(Math.random() * thunderSounds.length);
-  if (i === lastThunder && thunderSounds.length > 1) i = (i + 1) % thunderSounds.length;
-  lastThunder = i;
-  const sound = thunderSounds[i].cloneNode();
-  sound.volume = THUNDER_SOUND_VOLUME;
-  sound.play().catch(() => {});
-}
-
 // Intensité de l'éclair dt secondes après son début : deux ou trois
 // scintillements rapides puis une lueur qui s'éteint.
 function lightningEnvelope(dt) {
@@ -962,24 +830,11 @@ function lightningEnvelope(dt) {
   return Math.min(1, pulse(0.03, 0.045) + 0.65 * pulse(0.17, 0.05) + 0.45 * pulse(0.34, 0.08) + 0.2 * Math.exp(-dt * 4));
 }
 
-// Chaque éclair est annoncé par son tonnerre exactement THUNDER_LEAD s
-// avant : le tonnerre lance le compte à rebours, et l'éclair ne part que si
-// son tonnerre a été lancé. Une fois le tonnerre parti, l'éclair a lieu
-// même si la tempête retombe entre-temps (jamais de tonnerre sans éclair).
+// Le tonnerre suit chaque éclair (joué par le serveur, voir sons.py).
 function updateLightning(now) {
-  const level = tempestLevel(now);
-  const thunderLaunched = thunderPlayedFor === nextLightning;
-  if (!thunderLaunched) {
-    if (level < LIGHTNING.minTempest) {
-      // Premier éclair peu après que la tempête est bien installée.
-      nextLightning = now + THUNDER_LEAD + THREE.MathUtils.randFloat(0.5, 2);
-    } else if (now >= nextLightning - THUNDER_LEAD) {
-      // Heure du tonnerre : l'éclair aura lieu THUNDER_LEAD s plus tard
-      // (repoussé si besoin, pour ne jamais le raccourcir).
-      nextLightning = Math.max(nextLightning, now + THUNDER_LEAD);
-      thunderPlayedFor = nextLightning;
-      playThunderSound();
-    }
+  if (tempestLevel(now) < LIGHTNING.minTempest) {
+    // Premier éclair peu après que la tempête est bien installée.
+    nextLightning = now + THREE.MathUtils.randFloat(0.5, 2);
   } else if (now >= nextLightning) {
     lightningStart = now;
     nextLightning = now + THREE.MathUtils.randFloat(LIGHTNING.minInterval, LIGHTNING.maxInterval);
@@ -1105,7 +960,6 @@ function animate() {
   const windStrength = strongWindLevel(nowSeconds());
   windStrengthUniform.value = windStrength;
   windUniform.value = treeWindAt(t, windStrength);
-  if (SCREEN === "ciel") updateWindSound(windStrength);
   // Assombrissement : orage des clics nombreux, ou tempête automatique.
 const targetUmbrellaIntensity = umbrellaState;
 const transitionSpeed = 1 / UMBRELLA_TRANSITION_TIME;
@@ -1119,11 +973,7 @@ umbrellaIntensity = THREE.MathUtils.lerp(
   SCREEN === "ciel" ? umbrellaIntensity * TEMPEST.darkness : 0
 );
   uniforms.uStorm.value = storm;
-  if (SCREEN === "ciel") {
-    updateStormSound();
-    updateAmbientSound(windStrength);
-  }
-  if (SCREEN === "ciel") sendStormToPuddles(storm, nowSeconds());
+  if (SCREEN === "ciel") sendStormToPuddles(storm, umbrellaIntensity, windStrength, nowSeconds());
   // Éclairs (écran ciel) : illuminent aussi un instant les arbres.
   const flash = SCREEN === "ciel" ? updateLightning(nowSeconds()) : 0;
   if (hemiLight) hemiLight.intensity = 1.6 * (1 - storm * 0.45) * (1 + flash * 1.6);
