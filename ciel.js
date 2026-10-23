@@ -769,9 +769,17 @@ function updateDrops() {
   }
 }
 
-// --- Tempête du parapluie : le ciel s'assombrit et il pleut fort -------
+// --- Tempêtes : de temps en temps, le ciel s'assombrit et il pleut fort ---
 
 const TEMPEST = {
+  // Première tempête : ce nombre de secondes après le lancement de la page.
+  firstDelay: 10,
+  // Temps calme entre deux tempêtes suivantes, tiré au hasard (s).
+  minCalm: 60,
+  maxCalm: 150,
+  // Durée d'une tempête, hors montée et descente (s).
+  minDuration: 30,
+  maxDuration: 45,
   // Temps pour que le ciel s'assombrisse / redevienne clair (s).
   rampUp: 6,
   rampDown: 10,
@@ -786,11 +794,27 @@ const TEMPEST = {
   // pas trop pour garder l'affichage fluide.
   puddleRate: 12,
 };
+let tempestStart = Infinity;
+let tempestEnd = Infinity;
+
+function scheduleTempest(from, calm = THREE.MathUtils.randFloat(TEMPEST.minCalm, TEMPEST.maxCalm)) {
+  tempestStart = from + calm;
+  tempestEnd = tempestStart + THREE.MathUtils.randFloat(TEMPEST.minDuration, TEMPEST.maxDuration);
+}
+
+function startTempestNow() {
+  const now = nowSeconds();
+  // Si une tempête est déjà en cours, on la prolonge simplement.
+  if (tempestLevel(now) <= 0) tempestStart = now;
+  tempestEnd = now + THREE.MathUtils.randFloat(TEMPEST.minDuration, TEMPEST.maxDuration);
+}
+
 // --- Éclairs : pendant la tempête, de temps en temps ----------------------
 
 const LIGHTNING = {
-  // La tempête du parapluie doit être au moins à ce niveau pour qu'il y
-  // ait des éclairs.
+  // La tempête automatique (de temps en temps, même sans le parapluie) ou
+  // celle du parapluie doit être au moins à ce niveau pour qu'il y ait des
+  // éclairs.
   minTempest: 0.5,
   // Intervalle entre deux éclairs, tiré au hasard (s).
   minInterval: 8,
@@ -811,7 +835,7 @@ function lightningEnvelope(dt) {
 
 // Le tonnerre suit chaque éclair (joué par le serveur, voir sons.py).
 function updateLightning(now) {
-  if (umbrellaIntensity < LIGHTNING.minTempest) {
+  if (Math.max(tempestLevel(now), umbrellaIntensity) < LIGHTNING.minTempest) {
     // Premier éclair peu après que la tempête est bien installée.
     nextLightning = now + THREE.MathUtils.randFloat(0.5, 2);
   } else if (now >= nextLightning) {
@@ -832,6 +856,16 @@ function updateLightning(now) {
   uniforms.uBolt.value.w = now - lightningStart < 0.45 ? e : 0;
   return e;
 }
+
+// Force de la tempête (0 = calme, 1 = au plus fort). Programme la suivante
+// une fois celle-ci terminée.
+function tempestLevel(t) {
+  if (t > tempestEnd + TEMPEST.rampDown) scheduleTempest(t);
+  const up = THREE.MathUtils.smoothstep(t, tempestStart, tempestStart + TEMPEST.rampUp);
+  const down = 1 - THREE.MathUtils.smoothstep(t, tempestEnd, tempestEnd + TEMPEST.rampDown);
+  return Math.min(up, down);
+}
+
 
 // --- Pluie automatique : gouttes aléatoires et espacées, sans clic ---------
 
@@ -870,12 +904,10 @@ function puddleChance(L) {
 }
 
 if (SCREEN === "ciel") {
-  // Touche T : ouvre / ferme le parapluie (pour tester sans lui), comme
-  // si le parapluie l'envoyait au serveur.
+  scheduleTempest(nowSeconds(), TEMPEST.firstDelay);
+  // Touche T : déclenche une tempête tout de suite (pour tester).
   window.addEventListener("keydown", (event) => {
-    if (event.key !== "t" && event.key !== "T") return;
-    const state = umbrellaState > 0 ? 0 : 1;
-    fetch("/umbrella", { method: "POST", body: JSON.stringify({ state }) }).catch(() => {});
+    if (event.key === "t" || event.key === "T") startTempestNow();
   });
   // Le clic reste possible pour lancer une goutte à la main.
   renderer.domElement.addEventListener("pointerdown", spawnDrop);
