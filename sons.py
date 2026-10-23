@@ -47,6 +47,10 @@ WIND_SOUND = ("vent.mp3", 1)
 THUNDER_SOUND_FILES = ["foudre.mp3", "foudre2.mp3", "foudre3.mp3"]
 THUNDER_SOUND_VOLUME = 1
 THUNDER_DELAY = 3
+# Le tonnerre doit s'être tu avant l'éclair suivant : s'il est trop long, il
+# s'éteint en fondu (THUNDER_FADE s) pour finir THUNDER_MARGIN s avant.
+THUNDER_FADE = 1.5
+THUNDER_MARGIN = 0.5
 
 # Gouttes qui tombent dans l'eau : un des trois sons au hasard, chacun avec
 # sa propre intensité, tirée entre ces deux volumes.
@@ -110,6 +114,7 @@ class Sounds:
         self.thunders = [mixer.Sound(str(ROOT / f)) for f in THUNDER_SOUND_FILES]
         self.drops = [mixer.Sound(str(ROOT / f)) for f in DROP_SOUND_FILES]
         self.last_thunder = -1
+        self.thunder_channel = None
         self.last_drop = -1
         self.drop_channels = []
         # État reçu de l'écran ciel : umbrella = force de la tempête du
@@ -152,7 +157,12 @@ class Sounds:
         return i, channel
 
     def play_thunder(self):
-        self.last_thunder, _ = self.play_one_of(self.thunders, self.last_thunder, THUNDER_SOUND_VOLUME)
+        self.last_thunder, self.thunder_channel = self.play_one_of(self.thunders, self.last_thunder, THUNDER_SOUND_VOLUME)
+
+    def fade_thunder(self):
+        channel = self.thunder_channel
+        if channel and channel.get_busy() and channel.get_sound() in self.thunders:
+            channel.fadeout(int(THUNDER_FADE * 1000))
 
     def play_drop(self, storm=0):
         self.drop_channels = [c for c in self.drop_channels if c.get_busy()]
@@ -180,7 +190,12 @@ class Sounds:
             if self.umbrella_state > 0 and not was_open:
                 self.start_storm()
         elif kind == "eclair":
-            return [(THUNDER_DELAY, self.play_thunder)]
+            later = [(THUNDER_DELAY, self.play_thunder)]
+            # next : secondes avant l'éclair suivant (envoyé par le ciel).
+            if "next" in data:
+                fade = data["next"] - THUNDER_MARGIN - THUNDER_FADE
+                later.append((max(THUNDER_DELAY, fade), self.fade_thunder))
+            return later
         elif kind == "goutte":
             # Seulement si elle tombe dans une des flaques, au moment où
             # elle touche l'eau.
