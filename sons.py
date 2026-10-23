@@ -59,10 +59,14 @@ DROP_SOUND_MIN_VOLUME = 0.04
 DROP_SOUND_MAX_VOLUME = 0.18
 # Nombre maximum de sons de goutte en même temps.
 MAX_DROP_SOUNDS = 8
-# Aucun bruit de goutte dès que le ciel commence à s'assombrir, pendant la
-# tempête et tant qu'il ne s'est pas complètement éclairci, ni pour une
-# goutte partie pendant une tempête.
+# Aucun bruit de goutte dès que le ciel commence à s'assombrir et pendant la
+# tempête, ni pour une goutte partie pendant une tempête.
 DROP_SOUND_STORM_THRESHOLD = 0.003
+# Quand la tempête s'arrête (parapluie fermé), les gouttes reviennent dès
+# que l'assombrissement du ciel passe sous DROP_SOUND_RETURN_STORM : très
+# bas d'abord, puis de plus en plus fort, à leur volume normal une fois le
+# ciel redevenu clair.
+DROP_SOUND_RETURN_STORM = 0.4
 
 LOUDEST = 1.8
 
@@ -168,9 +172,16 @@ class Sounds:
         self.drop_channels = [c for c in self.drop_channels if c.get_busy()]
         if len(self.drop_channels) >= MAX_DROP_SOUNDS:
             return
-        if self.sky_storm > DROP_SOUND_STORM_THRESHOLD or storm > DROP_SOUND_STORM_THRESHOLD:
-            return
-        volume = random.uniform(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME)
+        level = 1
+        if self.umbrella_state > 0:
+            if self.sky_storm > DROP_SOUND_STORM_THRESHOLD or storm > DROP_SOUND_STORM_THRESHOLD:
+                return
+        elif self.sky_storm > DROP_SOUND_STORM_THRESHOLD:
+            # La tempête s'en va : retour progressif.
+            if self.sky_storm >= DROP_SOUND_RETURN_STORM:
+                return
+            level = (1 - self.sky_storm / DROP_SOUND_RETURN_STORM) ** 2
+        volume = level * random.uniform(DROP_SOUND_MIN_VOLUME, DROP_SOUND_MAX_VOLUME)
         self.last_drop, channel = self.play_one_of(self.drops, self.last_drop, volume)
         if channel:
             self.drop_channels.append(channel)
